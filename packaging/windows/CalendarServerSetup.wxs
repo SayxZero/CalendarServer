@@ -3,10 +3,13 @@
   setup.exe of the sync server: a WiX 3 bundle (Burn) around the MSI built from
   CalendarServer.wxs, with the stock bootstrapper window in Russian
   (setup-ru.wxl) and the theme of the planner's setup.exe (setup-theme.xml:
-  wider buttons, folder and shortcut checkboxes under Options).
-  setup-theme.xml, setup-ru.wxl, setup-logo.png, msi-*.bmp and CalendarServer.ico are copies of the
-  planner's (its packaging/windows and windows/CalendarPlanner.ico): the
-  server has no picture of its own.
+  wider buttons, folder and shortcut checkboxes under Options). The MSI
+  installs the server as a service and starts it; the last page opens the
+  admin panel.
+  setup-theme.xml, setup-logo.png, msi-*.bmp and CalendarServer.ico are copies
+  of the planner's (its packaging/windows and windows/CalendarPlanner.ico): the
+  server has no picture of its own. setup-ru.wxl started as a copy too and
+  speaks of the admin panel where the planner's speaks of the planner.
 
       candle -dVersion=... -dMsiFile=... -dPackagingDir=...
              -ext WixBalExtension -ext WixUtilExtension
@@ -28,13 +31,14 @@
           AboutUrl="https://github.com/SayxZero/CalendarServer"
           Compressed="yes">
 
-    <!-- No "Launch" button: a server is started on purpose, with the port and
-         the data folder it is meant to have, not as a side effect of setup. -->
+    <!-- The server starts by itself, as the service; "Launch" on the last page
+         opens the admin panel, which asks for the rights of an administrator. -->
     <BootstrapperApplicationRef Id="WixStandardBootstrapperApplication.HyperlinkLicense">
       <bal:WixStandardBootstrapperApplication LicenseUrl=""
                                               ThemeFile="$(var.PackagingDir)\setup-theme.xml"
                                               LocalizationFile="$(var.PackagingDir)\setup-ru.wxl"
-                                              LogoFile="$(var.PackagingDir)\setup-logo.png" />
+                                              LogoFile="$(var.PackagingDir)\setup-logo.png"
+                                              LaunchTarget="[InstallFolder]\CalendarServerAdmin.exe" />
     </BootstrapperApplicationRef>
 
     <Variable Name="InstallFolder" Type="string" Value="[ProgramFiles64Folder]CalendarServer" />

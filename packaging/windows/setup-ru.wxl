@@ -5,7 +5,8 @@
   thm.wxl, which "dark -x <dir> setup.exe" takes out of any built bundle,
   plus the three of our own theme (setup-theme.xml): InstallOptionsHint and the
   two shortcut checkboxes. A missing id shows up in the window as #(loc.Id),
-  so the list is complete.
+  so the list is complete. The copy of the planner, with the texts of the
+  server: the shortcuts are those of its admin panel, and so is "Launch".
 -->
 <WixLocalization Culture="ru-ru" Language="1049" xmlns="http://schemas.microsoft.com/wix/2006/localization">
   <String Id="Caption">Установка: [WixBundleName]</String>
@@ -23,15 +24,15 @@
   <String Id="HelpCloseButton">&amp;Закрыть</String>
   <String Id="InstallLicenseLinkText">[WixBundleName] &lt;a href="#"&gt;условия лицензии&lt;/a&gt;.</String>
   <String Id="InstallAcceptCheckbox">Я &amp;принимаю условия лицензии</String>
-  <String Id="InstallOptionsHint">Папку установки и ярлыки можно выбрать в «Параметрах».</String>
+  <String Id="InstallOptionsHint">Сервер установится службой Windows и запустится сразу. Папку установки и ярлыки админ-панели можно выбрать в «Параметрах».</String>
   <String Id="InstallOptionsButton">&amp;Параметры</String>
   <String Id="InstallInstallButton">&amp;Установить</String>
   <String Id="InstallCloseButton">&amp;Закрыть</String>
   <String Id="OptionsHeader">Параметры установки</String>
   <String Id="OptionsLocationLabel">Папка установки:</String>
   <String Id="OptionsBrowseButton">&amp;Обзор</String>
-  <String Id="OptionsDesktopShortcut">Добавить иконку на &amp;рабочий стол</String>
-  <String Id="OptionsStartMenuShortcut">Добавить иконку в меню «П&amp;уск»</String>
+  <String Id="OptionsDesktopShortcut">Добавить иконку админ-панели на &amp;рабочий стол</String>
+  <String Id="OptionsStartMenuShortcut">Добавить иконку админ-панели в меню «П&amp;уск»</String>
   <String Id="OptionsOkButton">&amp;ОК</String>
   <String Id="OptionsCancelButton">О&amp;тмена</String>
   <String Id="ProgressHeader">Установка</String>
@@ -43,7 +44,7 @@
   <String Id="ModifyUninstallButton">&amp;Удалить</String>
   <String Id="ModifyCloseButton">&amp;Закрыть</String>
   <String Id="SuccessHeader">Готово</String>
-  <String Id="SuccessLaunchButton">&amp;Запустить</String>
+  <String Id="SuccessLaunchButton">Админ-&amp;панель</String>
   <String Id="SuccessRestartText">Чтобы пользоваться программой, перезагрузите компьютер.</String>
   <String Id="SuccessRestartButton">&amp;Перезагрузить</String>
   <String Id="SuccessCloseButton">&amp;Закрыть</String>

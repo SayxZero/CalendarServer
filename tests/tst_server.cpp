@@ -10,9 +10,13 @@
 #include <QNetworkAccessManager>
 #include <QNetworkReply>
 #include <QNetworkRequest>
+#include <QSqlDatabase>
+#include <QSqlQuery>
+#include <QSqlRecord>
 #include <QTcpSocket>
 #include <QTemporaryDir>
 #include <QTimer>
+#include <QUuid>
 #include <QtTest>
 
 /*!
@@ -50,6 +54,12 @@ private slots:
     void restoringADeletedRecordIsLetThrough();
     void leavingTakesTheCopiesAlong();
     void linkRulesAreKept();
+
+    void exchangesAreCounted();
+    void copyIsConsistentAndSingleFile();
+    void importMovesTheOldBaseOnce();
+    void newerBaseIsRefused();
+    void olderBaseStartsTheHistoryFromSessions();
 
 private:
     struct Reply
@@ -1005,4 +1015,184 @@ void ServerTest::linkRulesAreKept()
     third.insert(QStringLiteral("token"), stale);
     third.insert(QStringLiteral("twinId"), QStringLiteral("twin-v"));
     QCOMPARE(call("POST", QStringLiteral("/api/share/join"), third, vera).status, 201);
+}
+
+// ------------------------------------------------------ base and statistics ----
+
+namespace {
+
+/*! Every row of @p statement on a connection of its own to @p path. */
+QList<QVariantList> rows(const QString &path, const QString &statement)
+{
+    QList<QVariantList> result;
+    const QString name = QStringLiteral("test-%1").arg(QUuid::createUuid().toString(QUuid::Id128));
+    {
+        QSqlDatabase db = QSqlDatabase::addDatabase(QStringLiteral("QSQLITE"), name);
+        db.setDatabaseName(path);
+        if (db.open()) {
+            QSqlQuery query(db);
+            if (query.exec(statement)) {
+                while (query.next()) {
+                    QVariantList row;
+                    for (int i = 0; i < query.record().count(); ++i)
+                        row << query.value(i);
+                    result << row;
+                }
+            }
+        }
+    }
+    QSqlDatabase::removeDatabase(name);
+    return result;
+}
+
+} // namespace
+
+/*!
+ * Every exchange is counted into the activity of its day - the source of the
+ * active accounts and the charts of the admin panel.
+ */
+void ServerTest::exchangesAreCounted()
+{
+    const QString token = registerUser(QStringLiteral("dina"));
+    QJsonObject data;
+    data.insert(QStringLiteral("title"), QStringLiteral("Встреча"));
+    QJsonObject push;
+    push.insert(QStringLiteral("since"), 0);
+    push.insert(QStringLiteral("changes"),
+                QJsonArray { change(QStringLiteral("event"), QStringLiteral("e1"), 1000, data) });
+    QCOMPARE(call("POST", QStringLiteral("/api/sync"), push, token).status, 200);
+    QJsonObject pull;
+    pull.insert(QStringLiteral("since"), 0);
+    QCOMPARE(call("POST", QStringLiteral("/api/sync"), pull, token).status, 200);
+
+    const QList<QVariantList> activity = rows(
+        m_config.databasePath(),
+        QStringLiteral("SELECT day, syncs, changes_in, changes_out, bytes_in, bytes_out, last_at"
+                       " FROM activity"));
+    QCOMPARE(activity.size(), 1);
+    const QVariantList &day = activity.first();
+    QCOMPARE(day.at(0).toString(), QDate::currentDate().toString(Qt::ISODate));
+    QCOMPARE(day.at(1).toInt(), 2);
+    QCOMPARE(day.at(2).toInt(), 1);   // the event went up once
+    QCOMPARE(day.at(3).toInt(), 1);   // and came back to the device that started from 0
+    QVERIFY(day.at(4).toLongLong() > 0);
+    QVERIFY(day.at(5).toLongLong() > 0);
+    const QDateTime last = QDateTime::fromString(day.at(6).toString(), Qt::ISODate);
+    QVERIFY(qAbs(last.secsTo(QDateTime::currentDateTimeUtc())) < 60);
+}
+
+/*!
+ * A copy taken while the server works holds what is still in its WAL, and it
+ * is one file: a backup is carried around without a -wal beside it.
+ */
+void ServerTest::copyIsConsistentAndSingleFile()
+{
+    const QString token = registerUser(QStringLiteral("emil"));
+    QCOMPARE(put(token, QStringLiteral("event"), QStringLiteral("e1"), QString(),
+                 QStringLiteral("Раз"), 1000).status,
+             200);
+
+    const QString copy = m_dir->filePath(QStringLiteral("copies/copy.db"));
+    QString error;
+    QVERIFY2(Storage::copyDatabase(m_config.databasePath(), copy, &error), qPrintable(error));
+    QVERIFY(!QFileInfo::exists(copy + QStringLiteral("-wal")));
+
+    const DatabaseInfo info = Storage::inspect(copy, true);
+    QVERIFY2(info.ok, qPrintable(info.error));
+    QCOMPARE(info.users, 1);
+    QCOMPARE(info.records, 1);
+    QCOMPARE(info.schemaVersion, Storage::schemaVersion());
+    QCOMPARE(rows(copy, QStringLiteral("PRAGMA journal_mode")).value(0).value(0).toString(),
+             QStringLiteral("delete"));
+
+    // A copy never goes over an existing file.
+    QVERIFY(!Storage::copyDatabase(m_config.databasePath(), copy, &error));
+    QVERIFY(!Storage::inspect(m_dir->filePath(QStringLiteral("nothing.db"))).ok);
+}
+
+/*!
+ * --import-db, the way the installer moves a console server's base to the
+ * service: once, and never over a base that has accounts.
+ */
+void ServerTest::importMovesTheOldBaseOnce()
+{
+    const QString token = registerUser(QStringLiteral("fedor"));
+    QCOMPARE(put(token, QStringLiteral("task"), QStringLiteral("t1"), QString(),
+                 QStringLiteral("Купить хлеб"), 1000).status,
+             200);
+    const QString source = m_config.databasePath();
+    const QString target = m_dir->filePath(QStringLiteral("service/server.db"));
+
+    QString message;
+    QCOMPARE(Storage::importDatabase(source, target, &message), Storage::ImportResult::Imported);
+    QCOMPARE(Storage::inspect(target).users, 1);
+    QCOMPARE(Storage::inspect(target).records, 1);
+
+    // The service has accounts now: a second run does nothing.
+    registerUser(QStringLiteral("late"));
+    QCOMPARE(Storage::importDatabase(source, target, &message), Storage::ImportResult::Skipped);
+    QCOMPARE(Storage::inspect(target).users, 1);
+
+    // No old base: nothing is created.
+    const QString nowhere = m_dir->filePath(QStringLiteral("other/server.db"));
+    QCOMPARE(Storage::importDatabase(m_dir->filePath(QStringLiteral("missing.db")), nowhere, &message),
+             Storage::ImportResult::Skipped);
+    QVERIFY(!QFileInfo::exists(nowhere));
+
+    // An empty base the service made on its own is replaced.
+    const QString empty = m_dir->filePath(QStringLiteral("empty/server.db"));
+    {
+        Storage fresh;
+        QVERIFY(fresh.open(empty));
+    }
+    QCOMPARE(Storage::importDatabase(source, empty, &message), Storage::ImportResult::Imported);
+    QCOMPARE(Storage::inspect(empty).users, 2);
+}
+
+/*! An older server does not write its schema over a newer base. */
+void ServerTest::newerBaseIsRefused()
+{
+    const QString path = m_dir->filePath(QStringLiteral("newer.db"));
+    {
+        Storage storage;
+        QVERIFY(storage.open(path));
+    }
+    rows(path, QStringLiteral("PRAGMA user_version = 99"));
+
+    Storage storage;
+    QString error;
+    QVERIFY(!storage.open(path, &error));
+    QVERIFY2(error.contains(QStringLiteral("более новой")), qPrintable(error));
+    QVERIFY(!Storage::inspect(path).ok);
+    QCOMPARE(rows(path, QStringLiteral("PRAGMA user_version")).value(0).value(0).toInt(), 99);
+}
+
+/*!
+ * A base of version 2 counted no exchanges; what it knows - the day every
+ * device was last seen - becomes the start of the history.
+ */
+void ServerTest::olderBaseStartsTheHistoryFromSessions()
+{
+    const QString path = m_dir->filePath(QStringLiteral("v2.db"));
+    {
+        Storage storage;
+        QVERIFY(storage.open(path));
+        const UserInfo user = storage.createUser(QStringLiteral("galya"), QStringLiteral("Галя"),
+                                                 QStringLiteral("hash"));
+        QVERIFY(user.isValid());
+        QVERIFY(storage.addToken(QByteArray(32, 'x'), user.id, QStringLiteral("phone")));
+    }
+    rows(path, QStringLiteral("DROP TABLE activity"));
+    rows(path, QStringLiteral("PRAGMA user_version = 2"));
+
+    {
+        Storage storage;
+        QVERIFY(storage.open(path));
+    }
+    const QList<QVariantList> activity = rows(path, QStringLiteral("SELECT day, syncs FROM activity"));
+    QCOMPARE(activity.size(), 1);
+    QCOMPARE(activity.first().at(0).toString(), QDate::currentDate().toString(Qt::ISODate));
+    QCOMPARE(activity.first().at(1).toInt(), 0);
+    QCOMPARE(rows(path, QStringLiteral("PRAGMA user_version")).value(0).value(0).toInt(),
+             Storage::schemaVersion());
 }

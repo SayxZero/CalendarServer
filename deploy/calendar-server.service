@@ -10,7 +10,9 @@ Wants=network-online.target
 [Service]
 User=calendar
 Group=calendar
-ExecStart=/usr/local/bin/CalendarServer --data-dir /var/lib/calendar-server --port 8765
+# --service: the log goes to server.log of the data folder as well, where the
+# admin panel (CalendarServerAdmin, run as root) reads it.
+ExecStart=/usr/local/bin/CalendarServer --service --data-dir /var/lib/calendar-server --port 8765
 Restart=on-failure
 RestartSec=5
 # The server needs nothing but its data folder and a TCP port.

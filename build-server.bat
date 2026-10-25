@@ -1,6 +1,7 @@
 @echo off
 rem ---------------------------------------------------------------------------
-rem  Release build of the sync server: build\CalendarServer.exe, tests and all.
+rem  Release build of the sync server: build\CalendarServer.exe, the admin
+rem  panel build\CalendarServerAdmin.exe, the tests of both and their run.
 rem
 rem      build-server.bat            build, then wait for a key press
 rem      build-server.bat -noui      build and return at once (for scripts)
@@ -60,26 +61,15 @@ rem server of their own on a spare port; nothing else needs to be running.
 title Сервер: тесты
 echo.
 echo [3/3] Тесты...
-set "TESTLOG=%TEMP%\calendarserver-tests.txt"
-del /q "%TESTLOG%" 2>nul
-"%SERVER_BUILD%\tst_server.exe" -o "%TESTLOG%,txt"
-if not exist "%TESTLOG%" (
-    echo [ОШИБКА] Тесты не запустились - отчёта нет.
-    goto :fail
-)
-findstr /c:"Totals:" "%TESTLOG%"
-findstr /c:"FAIL!" "%TESTLOG%" >nul && (
-    echo.
-    echo [ОШИБКА] Есть упавшие тесты:
-    findstr /c:"FAIL!" "%TESTLOG%"
-    goto :fail
-)
+call :runtests tst_server || goto :fail
+call :runtests tst_admin || goto :fail
 
 echo.
 echo ============================================================
 echo   ГОТОВО: %SERVER_BUILD%\CalendarServer.exe
+echo           %SERVER_BUILD%\CalendarServerAdmin.exe
 echo ============================================================
-echo   Запуск: run-server.bat
+echo   Запуск: run-server.bat; админ-панель: CalendarServerAdmin.exe -d ^<папка^>
 echo.
 title Сервер: сборка готова
 if not defined NOUI pause
@@ -93,6 +83,24 @@ echo ============================================================
 title Сервер: сборка не удалась
 if not defined NOUI pause
 exit /b 1
+
+:runtests
+rem %1 - the test program in the build folder.
+set "TESTLOG=%TEMP%\calendarserver-%~1.txt"
+del /q "%TESTLOG%" 2>nul
+"%SERVER_BUILD%\%~1.exe" -o "%TESTLOG%,txt"
+if not exist "%TESTLOG%" (
+    echo [ОШИБКА] %~1 не запустился - отчёта нет.
+    exit /b 1
+)
+findstr /c:"Totals:" "%TESTLOG%"
+findstr /c:"FAIL!" "%TESTLOG%" >nul && (
+    echo.
+    echo [ОШИБКА] Есть упавшие тесты в %~1:
+    findstr /c:"FAIL!" "%TESTLOG%"
+    exit /b 1
+)
+exit /b 0
 
 :checkcache
 rem %1 - каталог сборки. Кэш CMake помнит абсолютный путь, на котором его

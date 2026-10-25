@@ -2,19 +2,30 @@
 <!--
   MSI of the sync server for 64-bit Windows, built by build-installer.bat (WiX 3):
 
-      heat    harvests the server laid out by windeployqt into ServerFiles
-      candle  -arch x64 -dVersion=... -dSourceDir=... -dIconFile=...
-      light   -cultures:ru-ru -ext WixUIExtension
+      heat    harvests the server and the admin panel laid out by windeployqt
+              into ServerFiles - all but CalendarServer.exe, which is the file
+              of the service component below
+      candle  -arch x64 -dVersion=... -dSourceDir=... -dServiceExe=... -dIconFile=...
+              -ext WixUtilExtension -ext WixFirewallExtension
+      light   -cultures:ru-ru -ext WixUIExtension -ext WixUtilExtension
+              -ext WixFirewallExtension
 
-  The program goes to Program Files with a shortcut that starts it in its own
-  console window, the way run-server.bat does. It is not a Windows service:
-  the server is a console program; see README.md for autostart.
+  The server becomes the Windows service CosmosCalendarServer: it starts with
+  the system as LocalService, with no console, and right after installation.
+  Its settings, base and log live in %ProgramData%\CalendarPlanner\CalendarServer,
+  open to administrators and to the service only. The shortcuts are those of
+  the admin panel (CalendarServerAdmin.exe), which starts and stops the service
+  and works with the base.
 
-  The database (server.db in %APPDATA%\CalendarPlanner\CalendarServer of the
-  user who runs it, or wherever -d points) is never touched: removing the
-  program leaves every account in place.
+  A server of an older version ran in a console with its base in the data
+  folder of the user. The installer stops it and the service takes a copy of
+  that base, once, while it has no accounts of its own (the import-db option). The old
+  base itself is left untouched, and so is the base of the service when the
+  program is removed: server.ini and the data folder are permanent.
 -->
-<Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
+<Wix xmlns="http://schemas.microsoft.com/wix/2006/wi"
+     xmlns:util="http://schemas.microsoft.com/wix/UtilExtension"
+     xmlns:fw="http://schemas.microsoft.com/wix/FirewallExtension">
 
   <?ifndef Manufacturer ?>
     <?define Manufacturer = "SayxZero" ?>
@@ -51,45 +62,136 @@
       <Directory Id="ProgramFiles64Folder">
         <Directory Id="INSTALLFOLDER" Name="CalendarServer" />
       </Directory>
+      <Directory Id="CommonAppDataFolder">
+        <Directory Id="PlannerDataFolder" Name="CalendarPlanner">
+          <Directory Id="DATAFOLDER" Name="CalendarServer" />
+        </Directory>
+      </Directory>
       <Directory Id="ProgramMenuFolder" />
       <Directory Id="DesktopFolder" />
     </Directory>
 
-    <!-- The console window is the log of the server; closing it or Ctrl+C
-         stops it. -->
+    <!-- The server itself, as a service. Its own component: the service, the
+         firewall rule and the file have to come and go together. The rule is
+         for the program, whatever port server.ini gives it, on private
+         networks - a home network the way Windows calls it. -->
+    <DirectoryRef Id="INSTALLFOLDER">
+      <Component Id="ServerService" Guid="7D4752E3-C87A-4553-BCAE-C644DE89B0C3">
+        <File Id="ServerExe" Name="CalendarServer.exe" Source="$(var.ServiceExe)" KeyPath="yes">
+          <fw:FirewallException Id="ServerFirewall"
+                                Name="Космос календарь: сервер синхронизации"
+                                Description="Планеры в домашней сети подключаются к серверу синхронизации."
+                                Profile="private"
+                                Scope="any"
+                                IgnoreFailure="yes" />
+        </File>
+        <ServiceInstall Id="ServerService"
+                        Name="CosmosCalendarServer"
+                        DisplayName="Космос календарь: сервер синхронизации"
+                        Description="Хранит аккаунты планеров Космос календаря и раздаёт их изменения устройствам. Управляется админ-панелью сервера."
+                        Type="ownProcess"
+                        Start="auto"
+                        ErrorControl="normal"
+                        Account="NT AUTHORITY\LocalService"
+                        Arguments="--service --config &quot;[DATAFOLDER]server.ini&quot;"
+                        Vital="yes">
+          <!-- A crash is followed by a restart; the third one in a day stops it,
+               and the admin panel shows why from the log. -->
+          <util:ServiceConfig FirstFailureActionType="restart"
+                              SecondFailureActionType="restart"
+                              ThirdFailureActionType="none"
+                              RestartServiceDelayInSeconds="10"
+                              ResetPeriodInDays="1" />
+        </ServiceInstall>
+        <!-- Stopping waits: the files of the service are replaced after it.
+             Starting does not: a server that cannot start (a busy port) is not
+             a reason to roll the installation back - the admin panel says
+             what happened, and the log says why. -->
+        <ServiceControl Id="StopServer" Name="CosmosCalendarServer" Stop="both" Remove="uninstall" Wait="yes" />
+        <ServiceControl Id="StartServer" Name="CosmosCalendarServer" Start="install" Wait="no" />
+      </Component>
+    </DirectoryRef>
+
+    <!-- The data folder: settings, base, log and backups. Only the system,
+         administrators and the service (LocalService, read and write) get in:
+         the base holds every account. The settings are the user's once
+         written - kept on upgrades and left behind with the base. -->
+    <DirectoryRef Id="DATAFOLDER">
+      <Component Id="ServerSettings" Guid="E138CDC7-026E-4805-82FB-32DC743DF232"
+                 Permanent="yes" NeverOverwrite="yes">
+        <File Id="ServerIni" Name="server.ini" Source="$(var.PackagingDir)\service.ini" KeyPath="yes" />
+        <CreateFolder>
+          <PermissionEx Sddl="D:PAI(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;0x1301bf;;;LS)" />
+        </CreateFolder>
+      </Component>
+    </DirectoryRef>
+
     <DirectoryRef Id="ProgramMenuFolder">
-      <Component Id="StartMenuShortcut" Guid="623D2799-0F37-44E2-BBB9-E8F74635393F">
+      <Component Id="AdminStartMenuShortcut" Guid="89335F87-285B-4DEC-9EE6-A73BA3230E23">
         <Condition>INSTALLSTARTMENUSHORTCUT = 1</Condition>
-        <Shortcut Id="StartMenuShortcut"
-                  Name="Сервер синхронизации Космос календаря"
-                  Description="Запустить CalendarServer в окне консоли"
-                  Target="[INSTALLFOLDER]CalendarServer.exe"
+        <Shortcut Id="AdminStartMenuShortcut"
+                  Name="Админ-панель сервера Космос календаря"
+                  Description="Состояние сервера синхронизации, аккаунты, резервные копии и статистика"
+                  Target="[INSTALLFOLDER]CalendarServerAdmin.exe"
                   WorkingDirectory="INSTALLFOLDER"
                   Icon="ServerIcon" />
         <RegistryValue Root="HKCU" Key="Software\Cosmos Calendar\Installer"
-                       Name="ServerStartMenuShortcut" Type="integer" Value="1" KeyPath="yes" />
+                       Name="AdminStartMenuShortcut" Type="integer" Value="1" KeyPath="yes" />
       </Component>
     </DirectoryRef>
 
     <DirectoryRef Id="DesktopFolder">
-      <Component Id="DesktopShortcut" Guid="5E1A8394-8457-425B-9346-30FB422FB937">
+      <Component Id="AdminDesktopShortcut" Guid="BDAFBA58-EBD7-4442-9C84-6FAFC4A22AE1">
         <Condition>INSTALLDESKTOPSHORTCUT = 1</Condition>
-        <Shortcut Id="DesktopShortcut"
-                  Name="Сервер синхронизации Космос календаря"
-                  Description="Запустить CalendarServer в окне консоли"
-                  Target="[INSTALLFOLDER]CalendarServer.exe"
+        <Shortcut Id="AdminDesktopShortcut"
+                  Name="Админ-панель сервера Космос календаря"
+                  Description="Состояние сервера синхронизации, аккаунты, резервные копии и статистика"
+                  Target="[INSTALLFOLDER]CalendarServerAdmin.exe"
                   WorkingDirectory="INSTALLFOLDER"
                   Icon="ServerIcon" />
         <RegistryValue Root="HKCU" Key="Software\Cosmos Calendar\Installer"
-                       Name="ServerDesktopShortcut" Type="integer" Value="1" KeyPath="yes" />
+                       Name="AdminDesktopShortcut" Type="integer" Value="1" KeyPath="yes" />
       </Component>
     </DirectoryRef>
 
     <Feature Id="Server" Title="CalendarServer" Level="1" Absent="disallow">
       <ComponentGroupRef Id="ServerFiles" />
-      <ComponentRef Id="StartMenuShortcut" />
-      <ComponentRef Id="DesktopShortcut" />
+      <ComponentRef Id="ServerService" />
+      <ComponentRef Id="ServerSettings" />
+      <ComponentRef Id="AdminStartMenuShortcut" />
+      <ComponentRef Id="AdminDesktopShortcut" />
     </Feature>
+
+    <!-- A server of an older version, running in a console from this folder,
+         holds the port the service needs and the files being replaced. It is
+         closed before InstallValidate, so that the files are not even found
+         in use. Only processes of a user's session: the service of an older
+         version runs in session 0 and is stopped by its own ServiceControl.
+         The command stays under 255 characters, the size of the column
+         (ICE03), hence the short spelling of PowerShell. -->
+    <SetProperty Id="QtExecCmdLine" Before="StopOldServer" Sequence="execute"
+                 Value="&quot;[System64Folder]WindowsPowerShell\v1.0\powershell.exe&quot; -NoProfile -NonInteractive -Command &quot;Get-Process CalendarServer -EA 0 | ? SessionId -ne 0 | ? Path -eq '[INSTALLFOLDER]CalendarServer.exe' | Stop-Process -Force&quot;" />
+    <CustomAction Id="StopOldServer" BinaryKey="WixCA" DllEntry="CAQuietExec64"
+                  Execute="immediate" Return="ignore" />
+
+    <!-- The base of the console server, from the data folder of whoever
+         installs, goes to the service while the service has no accounts yet.
+         The server itself does it (its import-db option, a consistent copy of a
+         base in use); what it did is in server.log. -->
+    <CustomAction Id="ImportOldDatabase" FileKey="ServerExe"
+                  ExeCommand="--import-db &quot;[AppDataFolder]CalendarPlanner\CalendarServer\server.db&quot; --config &quot;[DATAFOLDER]server.ini&quot;"
+                  Execute="deferred" Impersonate="no" Return="ignore" />
+
+    <InstallExecuteSequence>
+      <Custom Action="StopOldServer" Before="InstallValidate">NOT REMOVE~="ALL"</Custom>
+      <Custom Action="ImportOldDatabase" After="InstallFiles">NOT REMOVE~="ALL"</Custom>
+    </InstallExecuteSequence>
+
+    <!-- "Open the admin panel" on the last page, in the user's own process:
+         the panel asks for the rights of an administrator itself. -->
+    <Property Id="WIXUI_EXITDIALOGOPTIONALCHECKBOXTEXT" Value="Открыть админ-панель сервера" />
+    <Property Id="WIXUI_EXITDIALOGOPTIONALCHECKBOX" Value="1" />
+    <CustomAction Id="LaunchAdmin" BinaryKey="WixCA" DllEntry="WixShellExec" Impersonate="yes" />
 
     <!-- The pictures of the dialogs instead of the red ones of WiX: drawn with
          the logo by tools/icons/make-icons.bat of the planner. -->
@@ -109,10 +211,11 @@
       <Dialog Id="ShortcutsDlg" Width="370" Height="270" Title="!(loc.InstallDirDlg_Title)">
         <Control Id="BannerBitmap" Type="Bitmap" X="0" Y="0" Width="370" Height="44" TabSkip="no" Text="WixUI_Bmp_Banner" />
         <Control Id="Title" Type="Text" X="15" Y="6" Width="200" Height="15" Transparent="yes" NoPrefix="yes" Text="{\WixUI_Font_Title}Ярлыки" />
-        <Control Id="Description" Type="Text" X="25" Y="23" Width="280" Height="15" Transparent="yes" NoPrefix="yes" Text="Где создать иконки для запуска сервера." />
+        <Control Id="Description" Type="Text" X="25" Y="23" Width="280" Height="15" Transparent="yes" NoPrefix="yes" Text="Где создать иконки админ-панели сервера." />
         <Control Id="BannerLine" Type="Line" X="0" Y="44" Width="370" Height="0" />
-        <Control Id="DesktopCheckbox" Type="CheckBox" X="20" Y="60" Width="330" Height="18" Property="INSTALLDESKTOPSHORTCUT" CheckBoxValue="1" Text="Добавить иконку на &amp;рабочий стол" />
-        <Control Id="StartMenuCheckbox" Type="CheckBox" X="20" Y="84" Width="330" Height="18" Property="INSTALLSTARTMENUSHORTCUT" CheckBoxValue="1" Text="Добавить иконку в меню «П&amp;уск»" />
+        <Control Id="DesktopCheckbox" Type="CheckBox" X="20" Y="60" Width="330" Height="18" Property="INSTALLDESKTOPSHORTCUT" CheckBoxValue="1" Text="Добавить иконку админ-панели на &amp;рабочий стол" />
+        <Control Id="StartMenuCheckbox" Type="CheckBox" X="20" Y="84" Width="330" Height="18" Property="INSTALLSTARTMENUSHORTCUT" CheckBoxValue="1" Text="Добавить иконку админ-панели в меню «П&amp;уск»" />
+        <Control Id="ServiceNote" Type="Text" X="20" Y="116" Width="330" Height="54" NoPrefix="yes" Text="Сам сервер установится службой Windows: он работает без окна, запускается вместе с системой и сразу после установки. Запускает, останавливает и показывает его админ-панель." />
         <Control Id="BottomLine" Type="Line" X="0" Y="234" Width="370" Height="0" />
         <Control Id="Back" Type="PushButton" X="180" Y="243" Width="56" Height="17" Text="!(loc.WixUIBack)">
           <Publish Event="NewDialog" Value="InstallDirDlg">1</Publish>
@@ -134,6 +237,11 @@
       <Publish Dialog="InstallDirDlg" Control="Back" Event="NewDialog" Value="WelcomeDlg" Order="2">1</Publish>
       <Publish Dialog="InstallDirDlg" Control="Next" Event="NewDialog" Value="ShortcutsDlg" Order="5">WIXUI_DONTVALIDATEPATH OR WIXUI_INSTALLDIR_VALID="1"</Publish>
       <Publish Dialog="VerifyReadyDlg" Control="Back" Event="NewDialog" Value="ShortcutsDlg" Order="2">NOT Installed</Publish>
+      <Publish Dialog="ExitDialog" Control="Finish" Property="WixShellExecTarget"
+               Value="[INSTALLFOLDER]CalendarServerAdmin.exe" Order="1">1</Publish>
+      <Publish Dialog="ExitDialog" Control="Finish" Event="DoAction" Value="LaunchAdmin" Order="2">
+        WIXUI_EXITDIALOGOPTIONALCHECKBOX = 1 and NOT Installed
+      </Publish>
     </UI>
   </Product>
 </Wix>

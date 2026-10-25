@@ -486,7 +486,17 @@ HttpResponse Api::sync(const HttpRequest &request, qint64 userId)
     object.insert(QStringLiteral("conflicts"), conflicts);
     object.insert(QStringLiteral("changes"), outgoing);
     object.insert(QStringLiteral("time"), QDateTime::currentDateTimeUtc().toString(Qt::ISODateWithMs));
-    return ok(object);
+    const HttpResponse response = ok(object);
+
+    // Statistics only: an exchange that went through is not failed for them.
+    SyncTraffic traffic;
+    traffic.changesIn = int(incoming.size());
+    traffic.changesOut = int(outgoing.size());
+    traffic.bytesIn = request.body.size();
+    traffic.bytesOut = response.body.size();
+    if (!m_storage->noteSync(userId, traffic))
+        qWarning().noquote() << "Не удалось учесть обмен в статистике:" << m_storage->lastError();
+    return response;
 }
 
 HttpResponse Api::record(const HttpRequest &request, qint64 userId)

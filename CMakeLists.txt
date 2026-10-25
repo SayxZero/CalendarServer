@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.16)
 
 project(CalendarServer
-    VERSION 1.0.0
+    VERSION 1.1.1
     DESCRIPTION "Sync server of the calendar planner"
     LANGUAGES CXX)
 
@@ -23,17 +23,91 @@ set(SERVER_CORE_SOURCES
     src/shares.cpp
     src/shares.h
     src/config.cpp
-    src/config.h)
+    src/config.h
+    src/service.cpp
+    src/service.h)
 
-add_executable(CalendarServer src/main.cpp ${SERVER_CORE_SOURCES})
-target_include_directories(CalendarServer PRIVATE src)
-target_link_libraries(CalendarServer PRIVATE Qt6::Core Qt6::Network Qt6::Sql)
-target_compile_definitions(CalendarServer PRIVATE
+# Compiled once for the server, its tests and the admin panel, which reads the
+# same base with the same code.
+add_library(server_core STATIC ${SERVER_CORE_SOURCES})
+target_include_directories(server_core PUBLIC src)
+target_link_libraries(server_core PUBLIC Qt6::Core Qt6::Network Qt6::Sql)
+target_compile_definitions(server_core PUBLIC
     QT_DISABLE_DEPRECATED_BEFORE=0x060000
     SERVER_VERSION="${PROJECT_VERSION}")
+if(WIN32)
+    # The service control manager.
+    target_link_libraries(server_core PUBLIC advapi32)
+endif()
+
+add_executable(CalendarServer src/main.cpp)
+target_link_libraries(CalendarServer PRIVATE server_core)
 
 include(GNUInstallDirs)
 install(TARGETS CalendarServer RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+
+# What the admin panel knows without a window: its queries over the base, the
+# backups, the service and the records of the planner. The tests use it too.
+set(ADMIN_DATA_SOURCES
+    admin/admindb.cpp
+    admin/admindb.h
+    admin/backups.cpp
+    admin/backups.h
+    admin/records.cpp
+    admin/records.h
+    admin/servicecontrol.cpp
+    admin/servicecontrol.h)
+
+add_library(admin_data STATIC ${ADMIN_DATA_SOURCES})
+target_include_directories(admin_data PUBLIC admin)
+target_link_libraries(admin_data PUBLIC server_core)
+if(WIN32)
+    target_link_libraries(admin_data PUBLIC shell32)
+endif()
+
+# The admin panel itself needs Qt Widgets, which a headless box usually does
+# not have; without them only the server and the tests are built.
+option(SERVER_BUILD_ADMIN "Build the admin panel (needs Qt Widgets)" ON)
+if(SERVER_BUILD_ADMIN)
+    find_package(Qt6 QUIET COMPONENTS Widgets)
+    if(NOT Qt6Widgets_FOUND)
+        message(STATUS "Qt Widgets not found: the admin panel is not built")
+    endif()
+endif()
+
+if(SERVER_BUILD_ADMIN AND Qt6Widgets_FOUND)
+    add_executable(CalendarServerAdmin WIN32
+        admin/main.cpp
+        admin/adminsession.cpp
+        admin/adminsession.h
+        admin/backuppage.cpp
+        admin/backuppage.h
+        admin/chart.cpp
+        admin/chart.h
+        admin/logpage.cpp
+        admin/logpage.h
+        admin/look.cpp
+        admin/look.h
+        admin/mainwindow.cpp
+        admin/mainwindow.h
+        admin/page.cpp
+        admin/page.h
+        admin/serverpage.cpp
+        admin/serverpage.h
+        admin/statspage.cpp
+        admin/statspage.h
+        admin/userspage.cpp
+        admin/userspage.h)
+    target_link_libraries(CalendarServerAdmin PRIVATE admin_data Qt6::Widgets)
+    if(WIN32)
+        # The icon and the name Explorer shows. The build follows the .rc,
+        # not the icon it pulls in, hence the dependency by hand.
+        target_sources(CalendarServerAdmin PRIVATE admin/admin.rc)
+        set_source_files_properties(admin/admin.rc PROPERTIES
+            OBJECT_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/packaging/windows/CalendarServer.ico)
+    endif()
+    install(TARGETS CalendarServerAdmin RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+endif()
 
 option(SERVER_BUILD_TESTS "Build the unit tests" ON)
 
@@ -41,12 +115,11 @@ if(SERVER_BUILD_TESTS)
     enable_testing()
     find_package(Qt6 REQUIRED COMPONENTS Test)
 
-    add_executable(tst_server tests/tst_server.cpp ${SERVER_CORE_SOURCES})
-    target_include_directories(tst_server PRIVATE src)
-    target_link_libraries(tst_server PRIVATE Qt6::Core Qt6::Network Qt6::Sql Qt6::Test)
-    target_compile_definitions(tst_server PRIVATE
-        QT_DISABLE_DEPRECATED_BEFORE=0x060000
-        SERVER_VERSION="${PROJECT_VERSION}")
-
+    add_executable(tst_server tests/tst_server.cpp)
+    target_link_libraries(tst_server PRIVATE server_core Qt6::Test)
     add_test(NAME server COMMAND tst_server)
+
+    add_executable(tst_admin tests/tst_admin.cpp)
+    target_link_libraries(tst_admin PRIVATE admin_data Qt6::Test)
+    add_test(NAME admin COMMAND tst_admin)
 endif()

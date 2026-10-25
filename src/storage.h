@@ -46,6 +46,26 @@ struct SyncRecord
     QString key() const { return kind + QLatin1Char('/') + id; }
 };
 
+/*! What one exchange carried, for the activity statistics (Storage::noteSync()). */
+struct SyncTraffic
+{
+    int changesIn = 0;    //!< records the device sent
+    int changesOut = 0;   //!< records it got back
+    qint64 bytesIn = 0;   //!< size of the request body
+    qint64 bytesOut = 0;  //!< size of the answer
+};
+
+/*! What a database file holds, read without changing it (Storage::inspect()). */
+struct DatabaseInfo
+{
+    bool ok = false;        //!< a base of this server that opened and passed the checks
+    QString error;          //!< why not, for people
+    int schemaVersion = 0;
+    int users = 0;
+    int records = 0;        //!< not counting tombstones
+    QDateTime lastActivity; //!< the newest sync or use of a session it remembers
+};
+
 struct SyncOutcome
 {
     qint64 revision = 0;       //!< the cursor the device keeps for its next sync
@@ -77,6 +97,37 @@ public:
     bool open(const QString &path, QString *error = nullptr);
     void close();
     QString lastError() const { return m_lastError; }
+
+    /*! The version this build writes into PRAGMA user_version. */
+    static int schemaVersion();
+
+    // ---- whole files ---------------------------------------------------------
+    /*!
+     * Opens @p path read-only and tells what it is. With @p check the whole file
+     * is read through (PRAGMA quick_check) - for a backup about to be restored.
+     */
+    static DatabaseInfo inspect(const QString &path, bool check = false);
+
+    /*!
+     * Writes a consistent copy of the base @p from into the new file @p to
+     * (VACUUM INTO): it may be taken while the server works on @p from. The copy
+     * is a single file in the rollback journal mode, with no -wal beside it.
+     */
+    static bool copyDatabase(const QString &from, const QString &to, QString *error);
+
+    /*! Deletes a base together with its -wal, -shm and -journal files. */
+    static bool removeDatabase(const QString &path, QString *error);
+
+    enum class ImportResult { Imported, Skipped, Failed };
+
+    /*!
+     * --import-db: brings the base @p source to @p target unless @p target has
+     * accounts already - how the installer moves the base of a server that ran
+     * in a console to the service. @p source is only read. @p message says what
+     * happened, for the log.
+     */
+    static ImportResult importDatabase(const QString &source, const QString &target,
+                                       QString *message);
 
     // ---- users -------------------------------------------------------------
     UserInfo userByLogin(const QString &login);
@@ -118,6 +169,12 @@ public:
      */
     SyncOutcome sync(qint64 userId, qint64 since, const QList<SyncRecord> &incoming,
                      const QString &device);
+
+    /*!
+     * Counts one exchange of the user into the activity of today: how many
+     * accounts sync a day, a week and a month is what the admin panel shows.
+     */
+    bool noteSync(qint64 userId, const SyncTraffic &traffic);
 
     int recordCount(qint64 userId, bool includeDeleted = false);
 

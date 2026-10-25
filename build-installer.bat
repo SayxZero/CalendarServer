@@ -14,10 +14,12 @@ rem                                           builds it as a step of its own)
 rem
 rem  It builds in build-release\ rather than build\: the server that is in use
 rem  usually runs from build\, and Windows does not let a running exe be
-rem  linked anew. SERVER_BUILD overrides the folder. The server is then laid
-rem  out with windeployqt, harvested with heat and packed. The version comes
-rem  from project() in CMakeLists.txt, the sources of the packages are in
-rem  packaging\windows, WiX is found through SERVER_WIX (build-env.bat).
+rem  linked anew. SERVER_BUILD overrides the folder. The server and the admin
+rem  panel are then laid out with windeployqt, harvested with heat and packed:
+rem  the server as the Windows service, the panel with its shortcuts. The
+rem  version comes from project() in CMakeLists.txt, the sources of the
+rem  packages are in packaging\windows, WiX is found through SERVER_WIX
+rem  (build-env.bat).
 rem ---------------------------------------------------------------------------
 
 chcp 65001 >nul
@@ -90,24 +92,45 @@ if not exist "%HERE%%SERVER_EXE%" (
     echo [ОШИБКА] Сервер не собран: "%HERE%%SERVER_EXE%"
     goto :fail
 )
+set "ADMIN_EXE=%SERVER_BUILD%\CalendarServerAdmin.exe"
+if not exist "%HERE%%ADMIN_EXE%" (
+    echo [ОШИБКА] Админ-панель не собрана: "%HERE%%ADMIN_EXE%"
+    echo           Ей нужен Qt Widgets в наборе "%SERVER_QT%".
+    goto :fail
+)
 
 rem ---- 2. what goes into the package ------------------------------------
 rem --compiler-runtime brings the MinGW libraries along, without --release
 rem for the same reason as in the planner: with a MinGW build it drops every
 rem plugin, the SQLite driver among them, and the server cannot open its base.
+rem The panel is laid out into the same folder: it adds Widgets and the
+rem platform plugin to what the server needs.
+rem
+rem CalendarServer.exe then moves out of the folder heat harvests: it is the
+rem file of the service component in CalendarServer.wxs, which a harvested
+rem component could not carry.
 title Сервер: файлы пакета
 echo.
 echo [2/4] Раскладка Qt и файлы пакета...
 if exist "%WORK%" rmdir /s /q "%WORK%"
 mkdir "%WORK%\files" || goto :fail
+mkdir "%WORK%\service" || goto :fail
 copy /y "%HERE%%SERVER_EXE%" "%WORK%\files\" >nul || goto :fail
+copy /y "%HERE%%ADMIN_EXE%" "%WORK%\files\" >nul || goto :fail
 copy /y "%HERE%deploy\server.ini.example" "%WORK%\files\" >nul || goto :fail
 "%SERVER_QT%\bin\windeployqt.exe" --compiler-runtime --no-translations ^
     "%WORK%\files\CalendarServer.exe" >nul || goto :fail
+"%SERVER_QT%\bin\windeployqt.exe" --compiler-runtime --no-translations --no-opengl-sw ^
+    --no-system-d3d-compiler "%WORK%\files\CalendarServerAdmin.exe" >nul || goto :fail
 if not exist "%WORK%\files\sqldrivers\qsqlite.dll" (
     echo [ОШИБКА] windeployqt не положил драйвер SQLite - сервер не откроет базу.
     goto :fail
 )
+if not exist "%WORK%\files\platforms\qwindows.dll" (
+    echo [ОШИБКА] windeployqt не положил qwindows.dll - админ-панель не откроет окно.
+    goto :fail
+)
+move /y "%WORK%\files\CalendarServer.exe" "%WORK%\service\" >nul || goto :fail
 if not exist "%OUT%" mkdir "%OUT%" || goto :fail
 del /q "%OUT%\%MSI%" "%OUT%\%SETUP%" 2>nul
 
@@ -118,10 +141,13 @@ echo [3/4] %MSI%...
 "%SERVER_WIX%\heat.exe" dir "%WORK%\files" -nologo -cg ServerFiles -dr INSTALLFOLDER ^
     -srd -sreg -scom -ag -var var.SourceDir -out "%WORK%\files.wxs" || goto :fail
 "%SERVER_WIX%\candle.exe" -nologo -arch x64 -dVersion=%VERSION% -dSourceDir="%WORK%\files" ^
-    -dIconFile="%PKG%\CalendarServer.ico" -dPackagingDir="%PKG%" -ext WixUIExtension ^
+    -dServiceExe="%WORK%\service\CalendarServer.exe" -dIconFile="%PKG%\CalendarServer.ico" ^
+    -dPackagingDir="%PKG%" -ext WixUIExtension -ext WixUtilExtension -ext WixFirewallExtension ^
     -out "%WORK%\\" "%PKG%\CalendarServer.wxs" "%WORK%\files.wxs" || goto :fail
-"%SERVER_WIX%\light.exe" -nologo -cultures:ru-ru -ext WixUIExtension ^
-    -spdb -out "%OUT%\%MSI%" "%WORK%\CalendarServer.wixobj" "%WORK%\files.wixobj" || goto :fail
+rem The firewall extension of WiX 3.7 has no Russian strings: firewall-ru.wxl.
+"%SERVER_WIX%\light.exe" -nologo -cultures:ru-ru -ext WixUIExtension -ext WixUtilExtension ^
+    -ext WixFirewallExtension -loc "%PKG%\firewall-ru.wxl" -spdb -out "%OUT%\%MSI%" ^
+    "%WORK%\CalendarServer.wixobj" "%WORK%\files.wixobj" || goto :fail
 
 rem ---- 4. setup.exe -----------------------------------------------------
 title Сервер: setup.exe
@@ -139,7 +165,8 @@ echo   ГОТОВО:
 echo     %OUT%\%MSI%
 echo     %OUT%\%SETUP%
 echo ============================================================
-echo   Пакеты не подписаны. База сервера при удалении остаётся.
+echo   Пакеты не подписаны. Сервер ставится службой CosmosCalendarServer;
+echo   его база при удалении остаётся.
 echo.
 title Сервер: установщики готовы
 if not defined NOUI pause

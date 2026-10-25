@@ -1,16 +1,21 @@
 #include "api.h"
 #include "config.h"
 #include "httpserver.h"
+#include "service.h"
 #include "storage.h"
 
-#include <QCommandLineOption>
 #include <QCommandLineParser>
 #include <QCoreApplication>
-#include <QNetworkInterface>
+#include <QDir>
+#include <QFile>
+#include <QFileInfo>
+#include <QMutex>
 #include <QTextStream>
+#include <QTimer>
 
 #include <csignal>
 #include <cstdio>
+#include <cstring>
 
 #ifdef Q_OS_WIN
 #include <windows.h>
@@ -36,30 +41,36 @@ void requestQuit(int)
     QMetaObject::invokeMethod(QCoreApplication::instance(), "quit", Qt::QueuedConnection);
 }
 
-/*! The addresses a phone in the same network can use to reach this machine. */
-QStringList reachableAddresses(const QHostAddress &bound, quint16 port)
+/*! The log file grows to this size, then becomes server.log.1 and starts anew. */
+const qint64 kLogLimit = 4 * 1024 * 1024;
+
+/*!
+ * Where the log goes: the console, unless the server is the service and has
+ * none, and the log file when there is one.
+ */
+struct LogSink
 {
-    QStringList result;
-    if (bound != QHostAddress::Any && bound != QHostAddress::AnyIPv4
-        && bound != QHostAddress::AnyIPv6) {
-        result << QStringLiteral("%1:%2").arg(bound.toString()).arg(port);
-        return result;
-    }
-    for (const QNetworkInterface &iface : QNetworkInterface::allInterfaces()) {
-        const auto flags = iface.flags();
-        if (!(flags & QNetworkInterface::IsUp) || !(flags & QNetworkInterface::IsRunning)
-            || (flags & QNetworkInterface::IsLoopBack)) {
-            continue;
-        }
-        for (const QNetworkAddressEntry &entry : iface.addressEntries()) {
-            const QHostAddress address = entry.ip();
-            if (address.protocol() != QAbstractSocket::IPv4Protocol)
-                continue;
-            result << QStringLiteral("%1:%2  (%3)").arg(address.toString()).arg(port)
-                          .arg(iface.humanReadableName());
-        }
-    }
-    return result;
+    QMutex mutex;
+    bool console = true;
+    QFile file;
+};
+
+LogSink &sink()
+{
+    static LogSink instance;
+    return instance;
+}
+
+void rotateLog(LogSink &log)
+{
+    const QString path = log.file.fileName();
+    log.file.close();
+    QFile::remove(path + QStringLiteral(".1"));
+    // The admin panel may be reading it right now; then the file goes on
+    // growing a little longer and the next line tries again.
+    QFile::rename(path, path + QStringLiteral(".1"));
+    log.file.setFileName(path);
+    log.file.open(QIODevice::WriteOnly | QIODevice::Append);
 }
 
 /*!
@@ -67,12 +78,38 @@ QStringList reachableAddresses(const QHostAddress &bound, quint16 port)
  * on Windows, which turns Russian text into garbage in a console. Information
  * goes to stdout, where systemd picks it up as well.
  */
-void logToConsole(QtMsgType type, const QMessageLogContext &context, const QString &message)
+void logMessage(QtMsgType type, const QMessageLogContext &context, const QString &message)
 {
+    // A warning from inside the file code below must not come back here.
+    static thread_local bool inside = false;
+    if (inside)
+        return;
+    inside = true;
+
     const QByteArray line = qFormatLogMessage(type, context, message).toUtf8() + '\n';
-    FILE *stream = type == QtInfoMsg || type == QtDebugMsg ? stdout : stderr;
-    std::fwrite(line.constData(), 1, size_t(line.size()), stream);
-    std::fflush(stream);
+    LogSink &log = sink();
+    QMutexLocker lock(&log.mutex);
+    if (log.console) {
+        FILE *stream = type == QtInfoMsg || type == QtDebugMsg ? stdout : stderr;
+        std::fwrite(line.constData(), 1, size_t(line.size()), stream);
+        std::fflush(stream);
+    }
+    if (log.file.isOpen()) {
+        if (log.file.size() + line.size() > kLogLimit)
+            rotateLog(log);
+        log.file.write(line);
+        log.file.flush();
+    }
+    inside = false;
+}
+
+void openLog(const QString &path)
+{
+    QDir().mkpath(QFileInfo(path).absolutePath());
+    LogSink &log = sink();
+    QMutexLocker lock(&log.mutex);
+    log.file.setFileName(path);
+    log.file.open(QIODevice::WriteOnly | QIODevice::Append);
 }
 
 QString readPassword()
@@ -81,13 +118,34 @@ QString readPassword()
     return in.readLine().trimmed();
 }
 
-} // namespace
-
-int main(int argc, char *argv[])
+QString native(const QString &path)
 {
-#ifdef Q_OS_WIN
-    SetConsoleOutputCP(CP_UTF8);
-#endif
+    return QDir::toNativeSeparators(path);
+}
+
+/*!
+ * --import-db: the installer moves the base of the server that used to run in
+ * a console, from the data folder of the user, to the service.
+ */
+int importDatabase(const QString &source, const ServerConfig &config)
+{
+    QString message;
+    const Storage::ImportResult result =
+        Storage::importDatabase(source, config.databasePath(), &message);
+    if (result == Storage::ImportResult::Failed) {
+        qCritical().noquote() << message;
+        return 1;
+    }
+    qInfo().noquote() << message;
+    return 0;
+}
+
+/*!
+ * The whole server. On Windows the service runs it on the thread the service
+ * control manager hands out (Service::run()), otherwise it is main() itself.
+ */
+int runServer(int argc, char *argv[])
+{
     QCoreApplication app(argc, argv);
     QCoreApplication::setOrganizationName(QStringLiteral("CalendarPlanner"));
     QCoreApplication::setApplicationName(QStringLiteral("CalendarServer"));
@@ -96,7 +154,9 @@ int main(int argc, char *argv[])
     qSetMessagePattern(QStringLiteral("%{time yyyy-MM-dd hh:mm:ss} "
                                       "%{if-warning}[!] %{endif}%{if-critical}[!!] %{endif}"
                                       "%{message}"));
-    qInstallMessageHandler(logToConsole);
+    const bool asService = Service::active();
+    sink().console = !asService;
+    qInstallMessageHandler(logMessage);
 
     QCommandLineParser parser;
     parser.setApplicationDescription(
@@ -104,35 +164,9 @@ int main(int argc, char *argv[])
                        "и записи пользователей."));
     const QCommandLineOption helpOption = parser.addHelpOption();
     const QCommandLineOption versionOption = parser.addVersionOption();
+    const ServerOptions options;
+    parser.addOptions(options.all());
 
-    const QCommandLineOption configOption(
-        { QStringLiteral("c"), QStringLiteral("config") },
-        QStringLiteral("INI-файл с настройками (группа [server])."), QStringLiteral("file"));
-    const QCommandLineOption hostOption(
-        QStringLiteral("host"),
-        QStringLiteral("Адрес, на котором слушать (по умолчанию все)."), QStringLiteral("address"));
-    const QCommandLineOption portOption(
-        { QStringLiteral("p"), QStringLiteral("port") },
-        QStringLiteral("TCP-порт (по умолчанию %1).").arg(ServerConfig::defaultPort()),
-        QStringLiteral("port"));
-    const QCommandLineOption dataOption(
-        { QStringLiteral("d"), QStringLiteral("data-dir") },
-        QStringLiteral("Папка для server.db."), QStringLiteral("path"));
-    const QCommandLineOption noRegistrationOption(
-        QStringLiteral("no-registration"),
-        QStringLiteral("Запретить создание новых аккаунтов."));
-    const QCommandLineOption listUsersOption(
-        QStringLiteral("list-users"), QStringLiteral("Показать аккаунты и выйти."));
-    const QCommandLineOption deleteUserOption(
-        QStringLiteral("delete-user"),
-        QStringLiteral("Удалить аккаунт вместе с данными и выйти."), QStringLiteral("login"));
-    const QCommandLineOption setPasswordOption(
-        QStringLiteral("set-password"),
-        QStringLiteral("Задать новый пароль аккаунта (читается из stdin) и выйти."),
-        QStringLiteral("login"));
-
-    parser.addOptions({ configOption, hostOption, portOption, dataOption, noRegistrationOption,
-                        listUsersOption, deleteUserOption, setPasswordOption });
     // process() would print help and errors in the ANSI code page on Windows,
     // which garbles Russian text; they go through the UTF-8 streams instead.
     if (!parser.parse(QCoreApplication::arguments())) {
@@ -150,36 +184,28 @@ int main(int argc, char *argv[])
 
     ServerConfig config;
     QString problem;
-    if (parser.isSet(configOption) && !config.loadIni(parser.value(configOption), &problem)) {
+    if (!config.apply(parser, options, &problem)) {
         err() << problem << Qt::endl;
         return 2;
     }
-    if (parser.isSet(hostOption) && !config.host.setAddress(parser.value(hostOption))) {
-        err() << "Неверный адрес: " << parser.value(hostOption) << Qt::endl;
-        return 2;
-    }
-    if (parser.isSet(portOption)) {
-        bool ok = false;
-        const uint port = parser.value(portOption).toUInt(&ok);
-        if (!ok || port == 0 || port > 65535) {
-            err() << "Неверный порт: " << parser.value(portOption) << Qt::endl;
-            return 2;
-        }
-        config.port = quint16(port);
-    }
-    if (parser.isSet(dataOption))
-        config.dataDir = parser.value(dataOption);
-    if (parser.isSet(noRegistrationOption))
-        config.allowRegistration = false;
+    // A service writes server.log, on Linux as well (where systemd starts it
+    // with --service too): that is the log the admin panel shows.
+    const QString logPath = config.resolvedLogFile(parser.isSet(options.service));
+    if (!logPath.isEmpty())
+        openLog(logPath);
+
+    if (parser.isSet(options.importDb))
+        return importDatabase(parser.value(options.importDb), config);
 
     Storage storage;
     if (!storage.open(config.databasePath(), &problem)) {
-        err() << "Не удалось открыть базу " << config.databasePath() << ": " << problem << Qt::endl;
+        qCritical().noquote() << QStringLiteral("Не удалось открыть базу %1: %2")
+                                     .arg(native(config.databasePath()), problem);
         return 1;
     }
 
     // ---- administration commands ----
-    if (parser.isSet(listUsersOption)) {
+    if (parser.isSet(options.listUsers)) {
         const QList<UserInfo> users = storage.users();
         out() << "Аккаунтов: " << users.size() << Qt::endl;
         for (const UserInfo &user : users) {
@@ -189,8 +215,8 @@ int main(int argc, char *argv[])
         }
         return 0;
     }
-    if (parser.isSet(deleteUserOption)) {
-        const UserInfo user = storage.userByLogin(parser.value(deleteUserOption));
+    if (parser.isSet(options.deleteUser)) {
+        const UserInfo user = storage.userByLogin(parser.value(options.deleteUser));
         if (!user.isValid()) {
             err() << "Нет такого аккаунта" << Qt::endl;
             return 1;
@@ -202,8 +228,8 @@ int main(int argc, char *argv[])
         out() << "Аккаунт " << user.login << " удалён" << Qt::endl;
         return 0;
     }
-    if (parser.isSet(setPasswordOption)) {
-        const UserInfo user = storage.userByLogin(parser.value(setPasswordOption));
+    if (parser.isSet(options.setPassword)) {
+        const UserInfo user = storage.userByLogin(parser.value(options.setPassword));
         if (!user.isValid()) {
             err() << "Нет такого аккаунта" << Qt::endl;
             return 1;
@@ -237,12 +263,25 @@ int main(int argc, char *argv[])
     std::signal(SIGINT, requestQuit);
     std::signal(SIGTERM, requestQuit);
 
-    qInfo().noquote() << QStringLiteral("CalendarServer %1 слушает порт %2")
+    // The service control manager asks to stop on a thread of its own; the
+    // flag it raises is picked up here, on the thread of the event loop.
+    QTimer stopWatch;
+    if (asService) {
+        QObject::connect(&stopWatch, &QTimer::timeout, &app, [] {
+            if (Service::stopRequested())
+                QCoreApplication::quit();
+        });
+        stopWatch.start(200);
+        Service::reportRunning();
+    }
+
+    qInfo().noquote() << QStringLiteral("CalendarServer %1 слушает порт %2%3")
                              .arg(QStringLiteral(SERVER_VERSION))
-                             .arg(server.serverPort());
-    qInfo().noquote() << "База данных:" << config.databasePath();
+                             .arg(server.serverPort())
+                             .arg(asService ? QStringLiteral(" (служба)") : QString());
+    qInfo().noquote() << "База данных:" << native(config.databasePath());
     qInfo().noquote() << "Регистрация:" << (config.allowRegistration ? "открыта" : "закрыта");
-    const QStringList addresses = reachableAddresses(config.host, server.serverPort());
+    const QStringList addresses = config.clientAddresses(server.serverPort());
     if (!addresses.isEmpty()) {
         qInfo().noquote() << "Адрес для клиентов:";
         for (const QString &address : addresses)
@@ -254,4 +293,20 @@ int main(int argc, char *argv[])
     storage.close();
     qInfo().noquote() << "Сервер остановлен";
     return code;
+}
+
+} // namespace
+
+int main(int argc, char *argv[])
+{
+#ifdef Q_OS_WIN
+    // --service is looked for before Qt is up: the whole server then runs on
+    // the thread the service control manager hands out, not on this one.
+    for (int i = 1; i < argc; ++i) {
+        if (std::strcmp(argv[i], "--service") == 0)
+            return Service::run(argc, argv, runServer);
+    }
+    SetConsoleOutputCP(CP_UTF8);
+#endif
+    return runServer(argc, argv);
 }
