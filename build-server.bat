@@ -112,7 +112,7 @@ echo       Каталог "%~1" остался от другого размещ�
 echo         в кэше: %CACHED%
 echo         сейчас: %CD%
 echo       Убираю кэш CMake и настраиваю заново.
-del /q "%~1\CMakeCache.txt" "%~1uild.ninja" "%~1\cmake_install.cmake" 2>nul
+del /q "%~1\CMakeCache.txt" "%~1\build.ninja" "%~1\cmake_install.cmake" 2>nul
 del /q "%~1\CTestTestfile.cmake" "%~1\.ninja_deps" "%~1\.ninja_log" 2>nul
 rd /s /q "%~1\CMakeFiles" 2>nul
 for /d %%D in ("%~1\*_autogen") do rd /s /q "%%D" 2>nul

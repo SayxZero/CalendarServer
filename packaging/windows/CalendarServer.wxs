@@ -1,0 +1,139 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  MSI of the sync server for 64-bit Windows, built by build-installer.bat (WiX 3):
+
+      heat    harvests the server laid out by windeployqt into ServerFiles
+      candle  -arch x64 -dVersion=... -dSourceDir=... -dIconFile=...
+      light   -cultures:ru-ru -ext WixUIExtension
+
+  The program goes to Program Files with a shortcut that starts it in its own
+  console window, the way run-server.bat does. It is not a Windows service:
+  the server is a console program; see README.md for autostart.
+
+  The database (server.db in %APPDATA%\CalendarPlanner\CalendarServer of the
+  user who runs it, or wherever -d points) is never touched: removing the
+  program leaves every account in place.
+-->
+<Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
+
+  <?ifndef Manufacturer ?>
+    <?define Manufacturer = "SayxZero" ?>
+  <?endif ?>
+
+  <!-- The UpgradeCode ties every version together; it must never change. -->
+  <Product Id="*"
+           Name="Космос календарь: сервер синхронизации"
+           Language="1049"
+           Codepage="1251"
+           Version="$(var.Version)"
+           Manufacturer="$(var.Manufacturer)"
+           UpgradeCode="E5C5CBAF-8586-4AB8-A5A9-CC827F3D79DD">
+
+    <Package InstallerVersion="500"
+             Compressed="yes"
+             InstallScope="perMachine"
+             Platform="x64"
+             Languages="1049"
+             SummaryCodepage="1251"
+             Description="CalendarServer $(var.Version)"
+             Comments="Сервер синхронизации Космос календаря" />
+
+    <MajorUpgrade Schedule="afterInstallInitialize"
+                  DowngradeErrorMessage="Уже установлена более новая версия сервера синхронизации. Сначала удалите её." />
+    <MediaTemplate EmbedCab="yes" CompressionLevel="high" />
+
+    <Icon Id="ServerIcon" SourceFile="$(var.IconFile)" />
+    <Property Id="ARPPRODUCTICON" Value="ServerIcon" />
+    <Property Id="ARPURLINFOABOUT" Value="https://github.com/SayxZero/CalendarServer" />
+    <Property Id="ARPHELPLINK" Value="https://github.com/SayxZero/CalendarServer" />
+
+    <Directory Id="TARGETDIR" Name="SourceDir">
+      <Directory Id="ProgramFiles64Folder">
+        <Directory Id="INSTALLFOLDER" Name="CalendarServer" />
+      </Directory>
+      <Directory Id="ProgramMenuFolder" />
+      <Directory Id="DesktopFolder" />
+    </Directory>
+
+    <!-- The console window is the log of the server; closing it or Ctrl+C
+         stops it. -->
+    <DirectoryRef Id="ProgramMenuFolder">
+      <Component Id="StartMenuShortcut" Guid="623D2799-0F37-44E2-BBB9-E8F74635393F">
+        <Condition>INSTALLSTARTMENUSHORTCUT = 1</Condition>
+        <Shortcut Id="StartMenuShortcut"
+                  Name="Сервер синхронизации Космос календаря"
+                  Description="Запустить CalendarServer в окне консоли"
+                  Target="[INSTALLFOLDER]CalendarServer.exe"
+                  WorkingDirectory="INSTALLFOLDER"
+                  Icon="ServerIcon" />
+        <RegistryValue Root="HKCU" Key="Software\Cosmos Calendar\Installer"
+                       Name="ServerStartMenuShortcut" Type="integer" Value="1" KeyPath="yes" />
+      </Component>
+    </DirectoryRef>
+
+    <DirectoryRef Id="DesktopFolder">
+      <Component Id="DesktopShortcut" Guid="5E1A8394-8457-425B-9346-30FB422FB937">
+        <Condition>INSTALLDESKTOPSHORTCUT = 1</Condition>
+        <Shortcut Id="DesktopShortcut"
+                  Name="Сервер синхронизации Космос календаря"
+                  Description="Запустить CalendarServer в окне консоли"
+                  Target="[INSTALLFOLDER]CalendarServer.exe"
+                  WorkingDirectory="INSTALLFOLDER"
+                  Icon="ServerIcon" />
+        <RegistryValue Root="HKCU" Key="Software\Cosmos Calendar\Installer"
+                       Name="ServerDesktopShortcut" Type="integer" Value="1" KeyPath="yes" />
+      </Component>
+    </DirectoryRef>
+
+    <Feature Id="Server" Title="CalendarServer" Level="1" Absent="disallow">
+      <ComponentGroupRef Id="ServerFiles" />
+      <ComponentRef Id="StartMenuShortcut" />
+      <ComponentRef Id="DesktopShortcut" />
+    </Feature>
+
+    <!-- The pictures of the dialogs instead of the red ones of WiX: drawn with
+         the logo by tools/icons/make-icons.bat of the planner. -->
+    <WixVariable Id="WixUIDialogBmp" Value="$(var.PackagingDir)\msi-dialog.bmp" />
+    <WixVariable Id="WixUIBannerBmp" Value="$(var.PackagingDir)\msi-banner.bmp" />
+
+    <!-- "Ярлыки": a page of its own between the folder and "Ready to install",
+         with the two checkboxes. The stock WixUI_InstallDir goes from
+         InstallDirDlg straight to VerifyReadyDlg; a NewDialog of a higher
+         Order on the same button wins, and VerifyReadyDlg's Back comes here.
+         Unticked, a checkbox deletes its property, so the conditions of the
+         shortcut components read "= 1": that also turns a 0 handed in by
+         setup.exe into "no". -->
+    <Property Id="INSTALLDESKTOPSHORTCUT" Value="1" />
+    <Property Id="INSTALLSTARTMENUSHORTCUT" Value="1" />
+    <UI>
+      <Dialog Id="ShortcutsDlg" Width="370" Height="270" Title="!(loc.InstallDirDlg_Title)">
+        <Control Id="BannerBitmap" Type="Bitmap" X="0" Y="0" Width="370" Height="44" TabSkip="no" Text="WixUI_Bmp_Banner" />
+        <Control Id="Title" Type="Text" X="15" Y="6" Width="200" Height="15" Transparent="yes" NoPrefix="yes" Text="{\WixUI_Font_Title}Ярлыки" />
+        <Control Id="Description" Type="Text" X="25" Y="23" Width="280" Height="15" Transparent="yes" NoPrefix="yes" Text="Где создать иконки для запуска сервера." />
+        <Control Id="BannerLine" Type="Line" X="0" Y="44" Width="370" Height="0" />
+        <Control Id="DesktopCheckbox" Type="CheckBox" X="20" Y="60" Width="330" Height="18" Property="INSTALLDESKTOPSHORTCUT" CheckBoxValue="1" Text="Добавить иконку на &amp;рабочий стол" />
+        <Control Id="StartMenuCheckbox" Type="CheckBox" X="20" Y="84" Width="330" Height="18" Property="INSTALLSTARTMENUSHORTCUT" CheckBoxValue="1" Text="Добавить иконку в меню «П&amp;уск»" />
+        <Control Id="BottomLine" Type="Line" X="0" Y="234" Width="370" Height="0" />
+        <Control Id="Back" Type="PushButton" X="180" Y="243" Width="56" Height="17" Text="!(loc.WixUIBack)">
+          <Publish Event="NewDialog" Value="InstallDirDlg">1</Publish>
+        </Control>
+        <Control Id="Next" Type="PushButton" X="236" Y="243" Width="56" Height="17" Default="yes" Text="!(loc.WixUINext)">
+          <Publish Event="NewDialog" Value="VerifyReadyDlg">1</Publish>
+        </Control>
+        <Control Id="Cancel" Type="PushButton" X="304" Y="243" Width="56" Height="17" Cancel="yes" Text="!(loc.WixUICancel)">
+          <Publish Event="SpawnDialog" Value="CancelDlg">1</Publish>
+        </Control>
+      </Dialog>
+    </UI>
+
+    <!-- The stock dialog set without its licence page, as in the planner. -->
+    <Property Id="WIXUI_INSTALLDIR" Value="INSTALLFOLDER" />
+    <UI>
+      <UIRef Id="WixUI_InstallDir" />
+      <Publish Dialog="WelcomeDlg" Control="Next" Event="NewDialog" Value="InstallDirDlg" Order="2">1</Publish>
+      <Publish Dialog="InstallDirDlg" Control="Back" Event="NewDialog" Value="WelcomeDlg" Order="2">1</Publish>
+      <Publish Dialog="InstallDirDlg" Control="Next" Event="NewDialog" Value="ShortcutsDlg" Order="5">WIXUI_DONTVALIDATEPATH OR WIXUI_INSTALLDIR_VALID="1"</Publish>
+      <Publish Dialog="VerifyReadyDlg" Control="Back" Event="NewDialog" Value="ShortcutsDlg" Order="2">NOT Installed</Publish>
+    </UI>
+  </Product>
+</Wix>

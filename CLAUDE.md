@@ -51,6 +51,13 @@ SERVER_BUILD=build-check cmd //c "D:\\Prog\\Calendar\\CalendarServer\\run-server
 Тестовые аккаунты не должны попадать в настоящую базу: любая ручная проверка —
 с `-d <своя папка>`.
 
+**Установщики Windows** — `build-installer.bat` (`-out <папка>`,
+`-skipbuild` — упаковать уже собранный сервер): сборка и тесты в `build-release` (`SERVER_BUILD`), `windeployqt`, затем WiX 3
+(`SERVER_WIX`, по умолчанию из `%WIX%`) — `CalendarServer-<v>-x64.msi` и
+`-setup.exe`. Исходники — `packaging/windows/`; `setup-ru.wxl`,
+`setup-theme.xml`, `setup-logo.png`, `msi-*.bmp` и `CalendarServer.ico` — копии из планера, `UpgradeCode` в
+`.wxs` не меняются никогда. Все пакеты выпуска разом — `../build-packages.bat`.
+
 ## Соглашения
 
 - **Сообщения для людей — по-русски** (`message` в ответах, журнал, справка),

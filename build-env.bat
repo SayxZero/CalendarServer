@@ -26,5 +26,9 @@ rem --data-dir is given: %APPDATA%\CalendarPlanner\CalendarServer.
 if not defined SERVER_BUILD     set "SERVER_BUILD=build"
 if not defined SERVER_EXE       set "SERVER_EXE=%SERVER_BUILD%\CalendarServer.exe"
 
+rem WiX 3 for build-installer.bat: its installer sets WIX to its own folder.
+if not defined SERVER_WIX if defined WIX set "SERVER_WIX=%WIX%bin"
+if not defined SERVER_WIX set "SERVER_WIX=C:\Program Files (x86)\WiX Toolset v3.7\bin"
+
 set "PATH=%SERVER_QT%\bin;%SERVER_MINGW%\bin;%SERVER_NINJA%;%PATH%"
 exit /b 0

@@ -62,6 +62,23 @@ build-server.bat
 нельзя — линковка упадёт. Для пробной сборки рядом с работающим сервером
 задайте другой каталог: `set SERVER_BUILD=build-check`.
 
+### Windows: установщики
+
+```bat
+build-installer.bat                 :: build-release\installer\CalendarServer-<версия>-x64.msi и -setup.exe
+build-installer.bat -out D:\Pkg     :: в свою папку
+```
+
+Нужен WiX Toolset 3 (переменная `WIX` или путь к папке с `candle.exe` в
+`SERVER_WIX`). Скрипт собирает сервер и прогоняет тесты в `build-release`
+(не в `build`, где обычно работает запущенный сервер), раскладывает Qt
+`windeployqt` и упаковывает в MSI для 64-битной Windows и в setup.exe.
+Установка — в Program Files (папку можно сменить) с ярлыками на рабочем
+столе и в «Пуске» — по выбору, оба отмечены, — которые запускают сервер в
+окне консоли; рядом — `server.ini.example`. Службой Windows сервер не
+ставится (см. «Автозапуск на Windows»), база при удалении остаётся.
+Исходники пакетов — `packaging/windows/`.
+
 ### Windows: Qt Creator
 
 Откройте `CMakeLists.txt` (или `CalendarServer.pro`), выберите набор
@@ -304,6 +321,9 @@ src/
   shares.*          общие календари: доступ, ссылки, разводка правок
 tests/tst_server.cpp  тесты по HTTP
 deploy/             пример server.ini и служба systemd
+packaging/windows/  установщики WiX: MSI, setup.exe, его русские строки
+packaging/linux/    заглушка: пакеты Linux будут собираться в Docker
+build-installer.bat установщики Windows
 build-server.bat    сборка и тесты на Windows
 run-server.bat      запуск на Windows
 build-env.bat       пути к Qt и инструментам (SERVER_*)

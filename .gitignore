@@ -24,6 +24,14 @@ moc_*.h
 moc_predefs.h
 object_script.*
 
+# Installers: the msi and setup.exe of build-installer.bat and what WiX
+# leaves on the way (its work folder build-installer/ falls under build-*/).
+*.msi
+*.wixobj
+*.wixpdb
+*.wixlib
+/packaging/windows/*.exe
+
 # CMake
 CMakeCache.txt
 CMakeFiles/

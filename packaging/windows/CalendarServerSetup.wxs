@@ -1,0 +1,58 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  setup.exe of the sync server: a WiX 3 bundle (Burn) around the MSI built from
+  CalendarServer.wxs, with the stock bootstrapper window in Russian
+  (setup-ru.wxl) and the theme of the planner's setup.exe (setup-theme.xml:
+  wider buttons, folder and shortcut checkboxes under Options).
+  setup-theme.xml, setup-ru.wxl, setup-logo.png, msi-*.bmp and CalendarServer.ico are copies of the
+  planner's (its packaging/windows and windows/CalendarPlanner.ico): the
+  server has no picture of its own.
+
+      candle -dVersion=... -dMsiFile=... -dPackagingDir=...
+             -ext WixBalExtension -ext WixUtilExtension
+      light  -ext WixBalExtension -ext WixUtilExtension
+-->
+<Wix xmlns="http://schemas.microsoft.com/wix/2006/wi"
+     xmlns:bal="http://schemas.microsoft.com/wix/BalExtension">
+
+  <?ifndef Manufacturer ?>
+    <?define Manufacturer = "SayxZero" ?>
+  <?endif ?>
+
+  <!-- Its own UpgradeCode, not the one of the MSI; it must never change. -->
+  <Bundle Name="Космос календарь: сервер синхронизации"
+          Version="$(var.Version)"
+          Manufacturer="$(var.Manufacturer)"
+          UpgradeCode="3A319588-D7A7-4D1D-B370-526874677922"
+          IconSourceFile="$(var.PackagingDir)\CalendarServer.ico"
+          AboutUrl="https://github.com/SayxZero/CalendarServer"
+          Compressed="yes">
+
+    <!-- No "Launch" button: a server is started on purpose, with the port and
+         the data folder it is meant to have, not as a side effect of setup. -->
+    <BootstrapperApplicationRef Id="WixStandardBootstrapperApplication.HyperlinkLicense">
+      <bal:WixStandardBootstrapperApplication LicenseUrl=""
+                                              ThemeFile="$(var.PackagingDir)\setup-theme.xml"
+                                              LocalizationFile="$(var.PackagingDir)\setup-ru.wxl"
+                                              LogoFile="$(var.PackagingDir)\setup-logo.png" />
+    </BootstrapperApplicationRef>
+
+    <Variable Name="InstallFolder" Type="string" Value="[ProgramFiles64Folder]CalendarServer" />
+
+    <!-- The two checkboxes of the Options page (setup-theme.xml) are named
+         after these variables; ticked by default. -->
+    <Variable Name="InstallDesktopShortcut" Type="numeric" Value="1" />
+    <Variable Name="InstallStartMenuShortcut" Type="numeric" Value="1" />
+
+    <Chain>
+      <MsiPackage Id="CalendarServer"
+                  SourceFile="$(var.MsiFile)"
+                  DisplayInternalUI="no"
+                  Vital="yes">
+        <MsiProperty Name="INSTALLFOLDER" Value="[InstallFolder]" />
+        <MsiProperty Name="INSTALLDESKTOPSHORTCUT" Value="[InstallDesktopShortcut]" />
+        <MsiProperty Name="INSTALLSTARTMENUSHORTCUT" Value="[InstallStartMenuShortcut]" />
+      </MsiPackage>
+    </Chain>
+  </Bundle>
+</Wix>

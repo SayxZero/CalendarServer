@@ -1,0 +1,55 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Russian strings of the setup.exe window. WiX 3.7 ships its standard
+  bootstrapper (the hyperlink theme) in English only; the ids are those of its
+  thm.wxl, which "dark -x <dir> setup.exe" takes out of any built bundle,
+  plus the three of our own theme (setup-theme.xml): InstallOptionsHint and the
+  two shortcut checkboxes. A missing id shows up in the window as #(loc.Id),
+  so the list is complete.
+-->
+<WixLocalization Culture="ru-ru" Language="1049" xmlns="http://schemas.microsoft.com/wix/2006/localization">
+  <String Id="Caption">Установка: [WixBundleName]</String>
+  <String Id="Title">[WixBundleName]</String>
+  <String Id="ConfirmCancelMessage">Прервать установку?</String>
+  <String Id="HelpHeader">Параметры установки</String>
+  <String Id="HelpText">/install | /repair | /uninstall | /layout [папка] - установить, исправить,
+   удалить или сохранить полную копию установщика в папку. По умолчанию - установка.
+
+/passive | /quiet - только индикатор хода или вовсе без окон и вопросов.
+   По умолчанию показываются окна и все вопросы.
+
+/norestart   - не перезагружать компьютер. По умолчанию установщик спросит.
+/log log.txt - журнал в указанный файл. По умолчанию журнал пишется в %TEMP%.</String>
+  <String Id="HelpCloseButton">&amp;Закрыть</String>
+  <String Id="InstallLicenseLinkText">[WixBundleName] &lt;a href="#"&gt;условия лицензии&lt;/a&gt;.</String>
+  <String Id="InstallAcceptCheckbox">Я &amp;принимаю условия лицензии</String>
+  <String Id="InstallOptionsHint">Папку установки и ярлыки можно выбрать в «Параметрах».</String>
+  <String Id="InstallOptionsButton">&amp;Параметры</String>
+  <String Id="InstallInstallButton">&amp;Установить</String>
+  <String Id="InstallCloseButton">&amp;Закрыть</String>
+  <String Id="OptionsHeader">Параметры установки</String>
+  <String Id="OptionsLocationLabel">Папка установки:</String>
+  <String Id="OptionsBrowseButton">&amp;Обзор</String>
+  <String Id="OptionsDesktopShortcut">Добавить иконку на &amp;рабочий стол</String>
+  <String Id="OptionsStartMenuShortcut">Добавить иконку в меню «П&amp;уск»</String>
+  <String Id="OptionsOkButton">&amp;ОК</String>
+  <String Id="OptionsCancelButton">О&amp;тмена</String>
+  <String Id="ProgressHeader">Установка</String>
+  <String Id="ProgressLabel">Выполняется:</String>
+  <String Id="OverallProgressPackageText">Подготовка...</String>
+  <String Id="ProgressCancelButton">О&amp;тмена</String>
+  <String Id="ModifyHeader">Изменение установки</String>
+  <String Id="ModifyRepairButton">&amp;Исправить</String>
+  <String Id="ModifyUninstallButton">&amp;Удалить</String>
+  <String Id="ModifyCloseButton">&amp;Закрыть</String>
+  <String Id="SuccessHeader">Готово</String>
+  <String Id="SuccessLaunchButton">&amp;Запустить</String>
+  <String Id="SuccessRestartText">Чтобы пользоваться программой, перезагрузите компьютер.</String>
+  <String Id="SuccessRestartButton">&amp;Перезагрузить</String>
+  <String Id="SuccessCloseButton">&amp;Закрыть</String>
+  <String Id="FailureHeader">Установка не удалась</String>
+  <String Id="FailureHyperlinkLogText">Установку прервала ошибка. Подробности - в &lt;a href="#"&gt;журнале установки&lt;/a&gt;.</String>
+  <String Id="FailureRestartText">Чтобы завершить откат изменений, перезагрузите компьютер.</String>
+  <String Id="FailureRestartButton">&amp;Перезагрузить</String>
+  <String Id="FailureCloseButton">&amp;Закрыть</String>
+</WixLocalization>
