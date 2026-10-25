@@ -1,0 +1,14 @@
+; Settings of CalendarServer, read with --config server.ini.
+; Options given on the command line win over this file.
+[server]
+; Address to listen on; empty or absent means every address of the machine.
+host=
+port=8765
+; Folder of server.db; a relative path is taken from where this file lies.
+data_dir=data
+; false: nobody can create new accounts, only the existing ones sign in.
+allow_registration=true
+; Largest request body in megabytes, the whole planner of one user in one sync.
+max_body_mb=64
+; A device that has not synced for this many days has to sign in again.
+token_lifetime_days=365

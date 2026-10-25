@@ -1,0 +1,24 @@
+# systemd unit of the calendar planner sync server.
+#   sudo useradd --system --home /var/lib/calendar-server --create-home calendar
+#   sudo cp deploy/calendar-server.service /etc/systemd/system/
+#   sudo systemctl enable --now calendar-server
+[Unit]
+Description=Calendar planner sync server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=calendar
+Group=calendar
+ExecStart=/usr/local/bin/CalendarServer --data-dir /var/lib/calendar-server --port 8765
+Restart=on-failure
+RestartSec=5
+# The server needs nothing but its data folder and a TCP port.
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/var/lib/calendar-server
+
+[Install]
+WantedBy=multi-user.target

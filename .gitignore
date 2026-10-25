@@ -1,0 +1,76 @@
+# Build output: build/, build-check/, build-qmake/...
+build/
+build-*/
+release/
+debug/
+*.o
+*.obj
+*.exe
+*.dll
+*.a
+*.so
+*.dylib
+*.pdb
+*.ilk
+*.exp
+*.lib
+
+# qmake / moc artefacts
+Makefile
+Makefile.*
+.qmake.stash
+moc_*.cpp
+moc_*.h
+moc_predefs.h
+object_script.*
+
+# CMake
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+CTestTestfile.cmake
+_deps/
+*_autogen/
+CMakeUserPresets.json
+compile_commands.json
+
+# Server data and the config of a particular machine. The database lands where
+# -d or data_dir points, which may be inside the tree (data_dir=data next to a
+# server.ini here); server.ini is the filled in copy of
+# deploy/server.ini.example, and only the example is tracked.
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+/data/
+server.ini
+*.log
+
+# Test output written next to the sources (tst_server -o out.txt,txt)
+/out.txt
+/result.txt
+
+# IDE and editors
+*.pro.user*
+CMakeLists.txt.user*
+.qtc_clangd/
+.qtcreator/
+*.autosave
+.vscode/
+.idea/
+.vs/
+*.user
+.cache/
+*.swp
+*~
+
+# Working folders of the coding tools: scratch worktrees and machine-local
+# settings.
+.claude/
+.kilo/
+.kilocode/
+
+# OS junk
+.DS_Store
+Thumbs.db
+Desktop.ini
