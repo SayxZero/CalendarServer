@@ -3,6 +3,7 @@
 #include "api.h"
 #include "config.h"
 #include "records.h"
+#include "shares.h"
 
 #include <QFileInfo>
 #include <QHash>
@@ -76,6 +77,8 @@ bool AdminDb::open(const QString &path, QString *error)
     if (!tables.contains(QStringLiteral("users")) || !tables.contains(QStringLiteral("records")))
         return fail(QStringLiteral("это не база сервера синхронизации"));
     m_tracked = tables.contains(QStringLiteral("activity"));
+    m_shared = tables.contains(QStringLiteral("shares"))
+               && tables.contains(QStringLiteral("share_members"));
     if (query.exec(QStringLiteral("PRAGMA user_version")) && query.next())
         m_schemaVersion = query.value(0).toInt();
     return true;
@@ -91,6 +94,7 @@ void AdminDb::close()
     m_path.clear();
     m_schemaVersion = 0;
     m_tracked = false;
+    m_shared = false;
 }
 
 int AdminDb::count(const QString &statement, const QVariantMap &values)
@@ -315,6 +319,63 @@ QList<CalendarSummary> AdminDb::calendars(qint64 userId, const QList<StoredRecor
             ++calendar.other;
     }
     return result;
+}
+
+bool AdminDb::signOut(qint64 userId, QString *error)
+{
+    QSqlQuery query(m_db);
+    query.prepare(QStringLiteral("DELETE FROM tokens WHERE user_id = :id"));
+    query.bindValue(QStringLiteral(":id"), userId);
+    if (!query.exec()) {
+        m_lastError = query.lastError().text();
+        if (error)
+            *error = m_lastError;
+        return false;
+    }
+    return true;
+}
+
+bool AdminDb::deleteUser(qint64 userId, QString *error)
+{
+    const auto fail = [this, error](const QString &message) {
+        m_lastError = message;
+        if (error)
+            *error = message;
+        return false;
+    };
+
+    // The shared calendars first, with the code of the server: the copies of
+    // the members go as tombstones, so their devices drop them too.
+    if (m_shared) {
+        ShareStore shares(m_db);
+        if (!shares.forgetUser(userId))
+            return fail(shares.lastError());
+    }
+
+    if (!m_db.transaction())
+        return fail(m_db.lastError().text());
+    QStringList tables = { QStringLiteral("records"), QStringLiteral("tokens") };
+    if (m_tracked)
+        tables << QStringLiteral("activity");
+    tables << QStringLiteral("users");
+    for (const QString &table : tables) {
+        QSqlQuery query(m_db);
+        query.prepare(QStringLiteral("DELETE FROM %1 WHERE %2 = :id")
+                          .arg(table, table == QLatin1String("users") ? QStringLiteral("id")
+                                                                       : QStringLiteral("user_id")));
+        query.bindValue(QStringLiteral(":id"), userId);
+        if (!query.exec()) {
+            const QString message = query.lastError().text();
+            m_db.rollback();
+            return fail(message);
+        }
+    }
+    if (!m_db.commit()) {
+        const QString message = m_db.lastError().text();
+        m_db.rollback();
+        return fail(message);
+    }
+    return true;
 }
 
 bool AdminDb::setPassword(qint64 userId, const QString &password, QString *error)

@@ -1,6 +1,7 @@
 #include "api.h"
 #include "config.h"
 #include "httpserver.h"
+#include "runtimefile.h"
 #include "service.h"
 #include "storage.h"
 
@@ -248,6 +249,14 @@ int runServer(int argc, char *argv[])
     }
 
     // ---- the server itself ----
+    // One server per base: a second one on the same folder would write into
+    // the same file, and the admin panel would not know which of them to ask.
+    RuntimeFile runtime(config.resolvedDataDir());
+    if (!runtime.claim(&problem)) {
+        qCritical().noquote() << QStringLiteral("Сервер не запущен: %1").arg(problem);
+        return 1;
+    }
+
     Api api(&storage, config);
     HttpServer server;
     server.setMaxBodySize(qint64(config.maxBodyMb) * 1024 * 1024);
@@ -262,6 +271,16 @@ int runServer(int argc, char *argv[])
 
     std::signal(SIGINT, requestQuit);
     std::signal(SIGTERM, requestQuit);
+
+    // What the admin panel cannot learn from the settings: the port given on
+    // the command line, the log file, the process.
+    RuntimeInfo info;
+    info.port = server.serverPort();
+    info.host = config.host.toString();
+    info.logFile = logPath;
+    info.version = QStringLiteral(SERVER_VERSION);
+    info.service = asService;
+    runtime.publish(info);
 
     // The service control manager asks to stop on a thread of its own; the
     // flag it raises is picked up here, on the thread of the event loop.
@@ -291,6 +310,7 @@ int runServer(int argc, char *argv[])
     const int code = app.exec();
     server.close();
     storage.close();
+    runtime.release();
     qInfo().noquote() << "Сервер остановлен";
     return code;
 }

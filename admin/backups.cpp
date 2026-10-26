@@ -160,6 +160,11 @@ RestoreOutcome Backups::restore(const QString &backup, const QString &database,
 
     QString problem;
     if (!Storage::removeDatabase(database, &problem)) {
+        // Nothing was replaced, so the copy set aside is of no use: it would
+        // only lie in the folder as a before-restore of a restore that never was.
+        if (!outcome.safetyCopy.isEmpty())
+            QFile::remove(outcome.safetyCopy);
+        outcome.safetyCopy.clear();
         outcome.error = QStringLiteral("Текущая база занята: %1. Сервер точно остановлен?").arg(problem);
         return outcome;
     }

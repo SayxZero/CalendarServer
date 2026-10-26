@@ -85,9 +85,18 @@ private:
     QString issueToken(qint64 userId, const QString &device);
     QJsonObject userJson(qint64 userId);
 
-    /*! Too many wrong passwords from one address lock it out for a while. */
-    bool isThrottled(const QHostAddress &peer);
-    void noteFailure(const QHostAddress &peer);
+    /*!
+     * Wrong passwords lock out what they were tried on for a while: one login
+     * from one address, and an address that tries many logins at once. Not the
+     * address as a whole for the first wrong password of somebody: behind a
+     * reverse proxy every device has the same address, and one person's typos
+     * would lock everybody out.
+     */
+    bool isThrottled(const QString &key, int limit);
+    void noteFailure(const QString &key);
+    void forgetOldFailures();
+    static QString loginKey(const QHostAddress &peer, const QString &login);
+    static QString peerKey(const QHostAddress &peer);
 
     static HttpResponse error(int status, const QString &code, const QString &message);
     static HttpResponse ok(const QJsonObject &object, int status = 200);
@@ -96,4 +105,5 @@ private:
     Storage *m_storage = nullptr;
     ServerConfig m_config;
     QHash<QString, QList<qint64>> m_failures;
+    int m_failuresNoted = 0;
 };

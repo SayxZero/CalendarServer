@@ -137,6 +137,15 @@ void ServerPage::showStatus()
     QStringList details;
     QString note;
 
+    if (!control) {
+        // The panel works on a folder of its own: what it shows is the server
+        // of that base, found by the lock it holds in the folder - not the
+        // service, which before stood here as "Сервер работает" while the
+        // base belonged to a console server on another port, or to none.
+        showOwnFolderStatus();
+        return;
+    }
+
     switch (status.state) {
     case ServiceControl::State::Running:
         headline = QStringLiteral("Сервер работает");
@@ -209,6 +218,51 @@ void ServerPage::showStatus()
     m_restart->setEnabled(control);
 }
 
+void ServerPage::showOwnFolderStatus()
+{
+    const RuntimeInfo &runtime = session()->runtime();
+    const QString folder = native(session()->config().resolvedDataDir());
+    QString headline;
+    QColor color = Look::muted();
+    QStringList details;
+    QString note;
+    if (runtime.running) {
+        headline = QStringLiteral("Сервер работает");
+        color = Look::good();
+        details << (runtime.service ? QStringLiteral("служба") : QStringLiteral("запущен вручную"));
+        details << QStringLiteral("процесс %1").arg(runtime.pid);
+        if (runtime.port)
+            details << QStringLiteral("порт %1").arg(runtime.port);
+        if (runtime.startedAt.isValid())
+            details << QStringLiteral("работает %1").arg(Look::span(runtime.startedAt.toLocalTime()));
+        note = runtime.service
+                   ? QStringLiteral("С этой базой работает служба. Чтобы запускать и останавливать "
+                                    "её отсюда, откройте панель без --data-dir и --config.")
+                   : QStringLiteral("Панель работает с базой в %1. Этот сервер останавливают там "
+                                    "же, где запустили, — в его окне (Ctrl+C).")
+                         .arg(folder);
+    } else {
+        headline = QStringLiteral("Сервер этой базы не запущен");
+        note = QStringLiteral("Панель работает с базой в %1. Сервер с ней запускают вручную: "
+                              "run-server.bat -d \"%1\" или CalendarServer --data-dir. "
+                              "Сервер версии до 1.2 о себе в папке не сообщает и здесь не виден.")
+                   .arg(folder);
+    }
+
+    m_state->setText(Look::dot(color, headline));
+    m_details->setText(details.join(QStringLiteral(" · ")));
+    m_details->setVisible(!details.isEmpty());
+    m_note->setText(note);
+    m_note->setVisible(true);
+    m_note->setProperty("role", "caption");
+    m_note->style()->unpolish(m_note);
+    m_note->style()->polish(m_note);
+    m_start->hide();
+    m_stop->hide();
+    m_restart->hide();
+    showSettings();
+}
+
 void ServerPage::showPing()
 {
     const PingAnswer &ping = session()->ping();
@@ -221,7 +275,7 @@ void ServerPage::showPing()
         m_ping->setText(QStringLiteral("Проверяю, отвечает ли сервер…"));
     } else {
         m_ping->setText(QStringLiteral("Не отвечает на порту %1%2")
-                            .arg(session()->config().port)
+                            .arg(session()->serverPort())
                             .arg(ping.error.isEmpty() ? QString() : QStringLiteral(": ") + ping.error));
     }
 }
@@ -231,13 +285,19 @@ void ServerPage::showSettings()
     const ServerConfig &config = session()->config();
     const bool any = config.host == QHostAddress::Any || config.host == QHostAddress::AnyIPv4
                      || config.host == QHostAddress::AnyIPv6;
-    m_port->setText(any ? QStringLiteral("%1, на всех адресах машины").arg(config.port)
-                        : QStringLiteral("%1, только на %2").arg(config.port).arg(config.host.toString()));
+    // The port the server really listens on: given with -p, it is not in the
+    // settings at all.
+    const quint16 port = session()->serverPort();
+    QString portText = any ? QStringLiteral("%1, на всех адресах машины").arg(port)
+                           : QStringLiteral("%1, только на %2").arg(port).arg(config.host.toString());
+    if (port != config.port)
+        portText += QStringLiteral(" (так запущен сервер; в настройках — %1)").arg(config.port);
+    m_port->setText(portText);
     m_registration->setText(config.allowRegistration
                                 ? QStringLiteral("открыта: новый аккаунт может создать любой, "
                                                  "кто достучится до сервера")
                                 : QStringLiteral("закрыта: входят только существующие аккаунты"));
-    const QStringList addresses = config.clientAddresses();
+    const QStringList addresses = config.clientAddresses(port);
     m_addresses->setText(addresses.isEmpty() ? QStringLiteral("у машины нет сетевых адресов")
                                              : addresses.join(QLatin1Char('\n')));
 

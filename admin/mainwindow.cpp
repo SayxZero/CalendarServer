@@ -110,7 +110,13 @@ void MainWindow::showStatus()
     const ServiceControl::Status &status = m_session->status();
     QColor color = Look::muted();
     QString text;
-    switch (status.state) {
+    // A panel opened on a folder speaks of the server of that base.
+    const RuntimeInfo &runtime = m_session->runtime();
+    if (!m_session->viaService()) {
+        color = runtime.running ? Look::good() : Look::muted();
+        text = runtime.running ? QStringLiteral("Сервер работает")
+                               : QStringLiteral("Сервер не запущен");
+    } else switch (status.state) {
     case ServiceControl::State::Running:
         color = Look::good();
         text = QStringLiteral("Сервер работает");
@@ -135,7 +141,7 @@ void MainWindow::showStatus()
     }
     m_status->setText(Look::dot(color, text));
     const PingAnswer &ping = m_session->ping();
-    const quint16 port = m_session->config().port;
+    const quint16 port = m_session->serverPort();
     m_answer->setText(ping.answered       ? QStringLiteral("отвечает на порту %1").arg(port)
                       : ping.at.isValid() ? QStringLiteral("на порту %1 не отвечает").arg(port)
                                           : QStringLiteral("проверяю порт %1…").arg(port));

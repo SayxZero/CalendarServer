@@ -299,6 +299,12 @@ bool Storage::setDisplayName(qint64 userId, const QString &name)
 
 bool Storage::deleteUser(qint64 userId)
 {
+    // First the shared calendars: the members' copies of this account's
+    // calendars go with tombstones, before the account itself is gone.
+    if (!m_shares->forgetUser(userId)) {
+        m_lastError = m_shares->lastError();
+        return false;
+    }
     if (!m_db.transaction())
         return false;
     for (const QString &table :

@@ -20,6 +20,8 @@ public:
 
 private:
     void showStatus();
+    /*! showStatus() of a panel opened on a folder: the server of that base. */
+    void showOwnFolderStatus();
     void showPing();
     void showSettings();
 

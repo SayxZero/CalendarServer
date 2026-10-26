@@ -77,6 +77,8 @@ QPushButton[accent="true"] { background: #6137c6; border-color: #6137c6; color: 
 QPushButton[accent="true"]:hover { background: #5430b0; border-color: #5430b0; }
 QPushButton[accent="true"]:pressed { background: #48289a; }
 QPushButton[accent="true"]:disabled { background: #cfc5ec; border-color: #cfc5ec; color: #ffffff; }
+QPushButton[danger="true"] { color: #d03b3b; }
+QPushButton[danger="true"]:disabled { color: #a8a7a0; }
 
 QLineEdit {
     padding: 4px 8px;

@@ -142,6 +142,14 @@ public:
      */
     bool dropCopies(qint64 memberId, const QString &twinId, qint64 *revision);
 
+    /*!
+     * An account goes away: the members of its calendars lose their copies
+     * (tombstones, so that their devices drop them too), and its shares, their
+     * links and its own memberships go. The records of the account itself are
+     * the caller's to delete. Runs outside a transaction of the caller's.
+     */
+    bool forgetUser(qint64 userId);
+
     // ---- routing -----------------------------------------------------------
     /*!
      * Where one change has to go besides the record set it arrived in. Reads

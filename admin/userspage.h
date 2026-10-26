@@ -43,6 +43,10 @@ private:
     void fillRecords();
     void openRecord(QTreeWidgetItem *item);
     void changePassword();
+    void signOutAccount();
+    void deleteAccount();
+    /*! The account picked in the list, nullptr when there is none. */
+    const UserSummary *currentAccount() const;
 
     QLineEdit *m_search = nullptr;
     QTreeWidget *m_users = nullptr;
@@ -56,6 +60,8 @@ private:
     QLabel *m_syncs = nullptr;
     QLabel *m_volume = nullptr;
     QPushButton *m_password = nullptr;
+    QPushButton *m_signOut = nullptr;
+    QPushButton *m_delete = nullptr;
     QLineEdit *m_recordSearch = nullptr;
     QCheckBox *m_deleted = nullptr;
     QTabWidget *m_tabs = nullptr;

@@ -716,6 +716,39 @@ ShareInfo ShareStore::join(const QString &token, qint64 memberId, const QString 
     return readShare(info.id);
 }
 
+bool ShareStore::forgetUser(qint64 userId)
+{
+    for (const ShareInfo &share : sharesOf(userId)) {
+        if (share.ownerId != userId)
+            continue;
+        // Somebody else's calendar would otherwise stay on every member's
+        // device as it was on the day its owner was deleted.
+        for (const ShareMemberInfo &member : share.members) {
+            if (member.userId != userId && !dropCopies(member.userId, member.twinId, nullptr))
+                return false;
+        }
+    }
+
+    const QStringList statements = {
+        QStringLiteral("DELETE FROM share_links WHERE share_id IN"
+                       " (SELECT id FROM shares WHERE owner_id = :user)"),
+        QStringLiteral("DELETE FROM share_members WHERE share_id IN"
+                       " (SELECT id FROM shares WHERE owner_id = :user)"),
+        QStringLiteral("DELETE FROM share_members WHERE user_id = :user"),
+        QStringLiteral("DELETE FROM shares WHERE owner_id = :user"),
+    };
+    for (const QString &statement : statements) {
+        QSqlQuery query(m_db);
+        query.prepare(statement);
+        query.bindValue(QStringLiteral(":user"), userId);
+        if (!query.exec()) {
+            m_lastError = query.lastError().text();
+            return false;
+        }
+    }
+    return true;
+}
+
 bool ShareStore::dropCopies(qint64 memberId, const QString &twinId, qint64 *revision)
 {
     QSqlQuery read(m_db);

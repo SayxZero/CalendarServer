@@ -143,6 +143,9 @@ public:
         auto *text = new QPlainTextEdit;
         text->setReadOnly(true);
         text->setFont(QFontDatabase::systemFont(QFontDatabase::FixedFont));
+        // Lines as the JSON has them: a long value wrapped at the edge of the
+        // box started again in the first column and broke the indentation.
+        text->setLineWrapMode(QPlainTextEdit::NoWrap);
         text->setPlainText(record.deleted
                                ? QStringLiteral("Запись удалена. Сервер хранит её надгробие, чтобы "
                                                 "об удалении узнали все устройства аккаунта.")
@@ -198,6 +201,9 @@ public:
             if (!problem.isEmpty()) {
                 m_problem->setText(problem);
                 m_problem->show();
+                // The window grows with the message under the fields instead
+                // of laying it over the hint above it.
+                adjustSize();
                 return;
             }
             accept();
@@ -261,7 +267,15 @@ UsersPage::UsersPage(AdminSession *session, QWidget *parent)
     headline->addLayout(names, 1);
     m_password = new QPushButton(QStringLiteral("Сменить пароль…"));
     connect(m_password, &QPushButton::clicked, this, &UsersPage::changePassword);
+    m_signOut = new QPushButton(QStringLiteral("Завершить сеансы…"));
+    m_signOut->setToolTip(QStringLiteral("Все устройства выйдут из аккаунта; записи останутся"));
+    connect(m_signOut, &QPushButton::clicked, this, &UsersPage::signOutAccount);
+    m_delete = new QPushButton(QStringLiteral("Удалить аккаунт…"));
+    m_delete->setProperty("danger", true);
+    connect(m_delete, &QPushButton::clicked, this, &UsersPage::deleteAccount);
     headline->addWidget(m_password, 0, Qt::AlignTop);
+    headline->addWidget(m_signOut, 0, Qt::AlignTop);
+    headline->addWidget(m_delete, 0, Qt::AlignTop);
     details->addLayout(headline);
 
     auto *grid = new QGridLayout;
@@ -633,13 +647,81 @@ void UsersPage::openRecord(QTreeWidgetItem *item)
     dialog.exec();
 }
 
-void UsersPage::changePassword()
+const UserSummary *UsersPage::currentAccount() const
 {
-    const UserSummary *user = nullptr;
     for (const UserSummary &candidate : m_accounts) {
         if (candidate.id == m_current)
-            user = &candidate;
+            return &candidate;
     }
+    return nullptr;
+}
+
+void UsersPage::signOutAccount()
+{
+    const UserSummary *user = currentAccount();
+    if (!user)
+        return;
+    const QString title = QStringLiteral("Завершить сеансы");
+    QMessageBox ask(QMessageBox::Question, title,
+                    QStringLiteral("Все устройства, вошедшие в аккаунт «%1» (%2), выйдут из него при "
+                                   "следующем обмене и попросят войти снова. Записи аккаунта "
+                                   "останутся.")
+                        .arg(user->login)
+                        .arg(user->devices),
+                    QMessageBox::NoButton, this);
+    // Buttons of its own: the translations of Qt do not come with the panel.
+    QPushButton *yes = ask.addButton(QStringLiteral("Завершить"), QMessageBox::AcceptRole);
+    ask.setDefaultButton(ask.addButton(QStringLiteral("Отмена"), QMessageBox::RejectRole));
+    ask.exec();
+    if (ask.clickedButton() != yes)
+        return;
+
+    QString error;
+    if (!session()->db().signOut(user->id, &error)) {
+        QMessageBox::warning(this, title, QStringLiteral("Сеансы не завершены: %1").arg(error));
+        return;
+    }
+    emit session()->accountsChanged();
+}
+
+void UsersPage::deleteAccount()
+{
+    const UserSummary *user = currentAccount();
+    if (!user)
+        return;
+    const QString login = user->login;
+    const qint64 id = user->id;
+    const QString title = QStringLiteral("Удаление аккаунта");
+    QMessageBox ask(QMessageBox::Warning, title,
+                    QStringLiteral("Удалить аккаунт «%1» вместе с его записями (%2)?\n\n"
+                                   "Его устройства выйдут из аккаунта; копии записей на них "
+                                   "останутся, но больше не будут синхронизироваться. Участники "
+                                   "его общих календарей потеряют к ним доступ. Отменить "
+                                   "удаление нельзя — вернуть аккаунт можно только из резервной "
+                                   "копии.")
+                        .arg(login, Look::number(user->records)),
+                    QMessageBox::NoButton, this);
+    QPushButton *yes = ask.addButton(QStringLiteral("Удалить"), QMessageBox::DestructiveRole);
+    ask.setDefaultButton(ask.addButton(QStringLiteral("Отмена"), QMessageBox::RejectRole));
+    ask.exec();
+    if (ask.clickedButton() != yes)
+        return;
+
+    QApplication::setOverrideCursor(Qt::WaitCursor);
+    QString error;
+    const bool ok = session()->db().deleteUser(id, &error);
+    QApplication::restoreOverrideCursor();
+    if (!ok) {
+        QMessageBox::warning(this, title, QStringLiteral("Аккаунт не удалён: %1").arg(error));
+        return;
+    }
+    m_current = 0;
+    emit session()->accountsChanged();
+}
+
+void UsersPage::changePassword()
+{
+    const UserSummary *user = currentAccount();
     if (!user)
         return;
     PasswordDialog dialog(*user, this);

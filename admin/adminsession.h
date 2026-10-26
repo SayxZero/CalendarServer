@@ -2,13 +2,14 @@
 
 #include "admindb.h"
 #include "config.h"
+#include "runtimefile.h"
 #include "servicecontrol.h"
 
 #include <QDateTime>
 #include <QObject>
 #include <QString>
 
-class QNetworkAccessManager;
+class QThread;
 class QTimer;
 
 /*! What the server answered on /api/ping the last time it was asked. */
@@ -57,6 +58,19 @@ public:
     const ServiceControl::Status &status() const { return m_status; }
     const PingAnswer &ping() const { return m_ping; }
 
+    /*!
+     * What the server of this base left in its folder (server.lock,
+     * server.run): whether one runs on it right now, whatever started it, and
+     * on which port. A console server given -p is found here and nowhere else.
+     */
+    const RuntimeInfo &runtime() const { return m_runtime; }
+
+    /*!
+     * The port to ask: the one the running server of this base listens on,
+     * the one of the settings when none runs or it is too old to say.
+     */
+    quint16 serverPort() const;
+
     AdminDb &db() { return m_db; }
     QString databasePath() const { return m_config.databasePath(); }
 
@@ -96,7 +110,8 @@ private:
     ServiceControl::Status m_status;
     PingAnswer m_ping;
     AdminDb m_db;
-    QNetworkAccessManager *m_network = nullptr;
+    RuntimeInfo m_runtime;
+    QThread *m_pingThread = nullptr;
     QTimer *m_statusTimer = nullptr;
     QTimer *m_pingTimer = nullptr;
     bool m_pinging = false;

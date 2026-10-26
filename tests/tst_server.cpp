@@ -1,6 +1,7 @@
 #include "api.h"
 #include "config.h"
 #include "httpserver.h"
+#include "runtimefile.h"
 #include "storage.h"
 
 #include <QEventLoop>
@@ -44,7 +45,10 @@ private slots:
     void throttlesGuessing();
     void pipelinedRequests();
     void malformedRequests();
+    void headAndOldHttpAreAnsweredProperly();
     void registrationCanBeClosed();
+    void clockAheadDoesNotWinForever();
+    void oneServerPerBase();
 
     void sharedCalendarReachesTheMember();
     void readOnlyMemberIsRefused();
@@ -270,8 +274,19 @@ void ServerTest::requiresToken()
 {
     QCOMPARE(call("POST", QStringLiteral("/api/sync"), QJsonObject()).status, 401);
     QCOMPARE(call("GET", QStringLiteral("/api/me"), {}, QStringLiteral("forged")).status, 401);
-    QCOMPARE(call("GET", QStringLiteral("/api/nothing")).status, 401);
+    // An unknown path is unknown whoever asks, and a known one asked the
+    // wrong way is the wrong method - neither is a question of the token.
+    QCOMPARE(call("GET", QStringLiteral("/api/nothing")).status, 404);
     QCOMPARE(call("GET", QStringLiteral("/elsewhere")).status, 404);
+    QCOMPARE(call("GET", QStringLiteral("/api/sync")).status, 405);
+
+    const QString token = registerUser(QStringLiteral("zoya"));
+    QCOMPARE(call("POST", QStringLiteral("/api/me"), QJsonObject(), token).status, 405);
+
+    // The scheme of the header is case-insensitive.
+    const QByteArray lower = "GET /api/me HTTP/1.1\r\nAuthorization: bearer " + token.toLatin1()
+                             + "\r\nConnection: close\r\n\r\n";
+    QVERIFY(raw(lower).startsWith("HTTP/1.1 200"));
 }
 
 void ServerTest::syncRoundTrip()
@@ -489,6 +504,23 @@ void ServerTest::throttlesGuessing()
     // Even the right password is refused for a while.
     wrong.insert(QStringLiteral("password"), QStringLiteral("secret1"));
     QCOMPARE(call("POST", QStringLiteral("/api/login"), wrong).status, 429);
+
+    // Only for this login: everybody else behind the same address - a home
+    // router, a reverse proxy - signs in as before.
+    const QString token = registerUser(QStringLiteral("ilya"));
+    QJsonObject other;
+    other.insert(QStringLiteral("login"), QStringLiteral("ilya"));
+    other.insert(QStringLiteral("password"), QStringLiteral("secret1"));
+    QCOMPARE(call("POST", QStringLiteral("/api/login"), other).status, 200);
+
+    // The current password is not guessed through the change of it either.
+    QJsonObject change;
+    change.insert(QStringLiteral("oldPassword"), QStringLiteral("guess00"));
+    change.insert(QStringLiteral("newPassword"), QStringLiteral("secret2"));
+    for (int i = 0; i < 10; ++i)
+        QCOMPARE(call("POST", QStringLiteral("/api/password"), change, token).status, 403);
+    change.insert(QStringLiteral("oldPassword"), QStringLiteral("secret1"));
+    QCOMPARE(call("POST", QStringLiteral("/api/password"), change, token).status, 429);
 }
 
 void ServerTest::pipelinedRequests()
@@ -510,6 +542,91 @@ void ServerTest::malformedRequests()
 
     const QByteArray notJson = "POST /api/login HTTP/1.1\r\nContent-Length: 3\r\n\r\nabc";
     QVERIFY(raw(notJson).startsWith("HTTP/1.1 400"));
+}
+
+void ServerTest::headAndOldHttpAreAnsweredProperly()
+{
+    // HEAD: the headers of the GET, its length included, and no body.
+    const QByteArray get = raw("GET /api/ping HTTP/1.1\r\nConnection: close\r\n\r\n");
+    const QByteArray head = raw("HEAD /api/ping HTTP/1.1\r\nConnection: close\r\n\r\n");
+    const auto lengthOf = [](const QByteArray &answer) {
+        const int at = answer.indexOf("Content-Length: ");
+        return at < 0 ? -1 : answer.mid(at + 16, answer.indexOf("\r\n", at) - at - 16).toInt();
+    };
+    QVERIFY(head.startsWith("HTTP/1.1 200"));
+    QVERIFY(lengthOf(get) > 0);
+    QCOMPARE(lengthOf(head), lengthOf(get));
+    QVERIFY(head.endsWith("\r\n\r\n"));
+
+    // HTTP/1.0 closes the connection unless asked to keep it.
+    QVERIFY(raw("GET /api/ping HTTP/1.0\r\n\r\n").contains("Connection: close"));
+    QVERIFY(raw("GET /api/ping HTTP/1.0\r\nConnection: keep-alive\r\n\r\n")
+                .contains("Connection: keep-alive"));
+}
+
+void ServerTest::clockAheadDoesNotWinForever()
+{
+    const QString token = registerUser(QStringLiteral("yana"));
+    QJsonObject first;
+    first.insert(QStringLiteral("title"), QStringLiteral("С телефона, у которого 2036 год"));
+    QJsonObject push;
+    push.insert(QStringLiteral("since"), 0);
+    const qint64 now = QDateTime::currentMSecsSinceEpoch();
+    const qint64 tenYears = 10ll * 365 * 24 * 3600 * 1000;
+    push.insert(QStringLiteral("changes"),
+                QJsonArray { change(QStringLiteral("event"), QStringLiteral("e1"), now + tenYears,
+                                    first) });
+    QCOMPARE(call("POST", QStringLiteral("/api/sync"), push, token).status, 200);
+
+    // The device that is right about the time edits the same record a minute
+    // later: before, its edit lost to the one from the future for ten years.
+    QJsonObject second;
+    second.insert(QStringLiteral("title"), QStringLiteral("Правка с компьютера"));
+    push.insert(QStringLiteral("changes"),
+                QJsonArray { change(QStringLiteral("event"), QStringLiteral("e1"), now + 60000,
+                                    second) });
+    const Reply reply = call("POST", QStringLiteral("/api/sync"), push, token);
+    QCOMPARE(reply.status, 200);
+    QCOMPARE(reply.body.value(QStringLiteral("accepted")).toInt(), 1);
+    QCOMPARE(reply.body.value(QStringLiteral("rejected")).toInt(), 0);
+
+    const QHash<QString, QJsonObject> all = pull(token);
+    QCOMPARE(all.value(QStringLiteral("event/e1")).value(QStringLiteral("data")).toObject()
+                 .value(QStringLiteral("title")).toString(),
+             QStringLiteral("Правка с компьютера"));
+}
+
+void ServerTest::oneServerPerBase()
+{
+    QTemporaryDir folder;
+    QVERIFY(folder.isValid());
+
+    RuntimeFile first(folder.path());
+    QVERIFY(first.claim());
+    RuntimeInfo info;
+    info.port = 8799;
+    info.logFile = folder.filePath(QStringLiteral("server.log"));
+    info.version = QStringLiteral("test");
+    first.publish(info);
+
+    // The admin panel learns that the base is in use, and from whom.
+    const RuntimeInfo seen = RuntimeFile::read(folder.path());
+    QVERIFY(seen.running);
+    QCOMPARE(seen.pid, QCoreApplication::applicationPid());
+    QCOMPARE(seen.port, quint16(8799));
+    QCOMPARE(seen.logFile, info.logFile);
+
+    // A second server on the same base does not start.
+    RuntimeFile second(folder.path());
+    QString error;
+    QVERIFY(!second.claim(&error));
+    QVERIFY(error.contains(QString::number(QCoreApplication::applicationPid())));
+
+    // Once the first one is gone the base is free again.
+    first.release();
+    QVERIFY(!RuntimeFile::read(folder.path()).running);
+    QVERIFY(second.claim());
+    second.release();
 }
 
 void ServerTest::registrationCanBeClosed()

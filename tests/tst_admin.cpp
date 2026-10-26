@@ -1,8 +1,10 @@
 #include "admindb.h"
+#include "adminsession.h"
 #include "api.h"
 #include "backups.h"
 #include "config.h"
 #include "records.h"
+#include "runtimefile.h"
 #include "servicecontrol.h"
 #include "storage.h"
 
@@ -34,6 +36,9 @@ private slots:
     void totalsCountActiveAccounts();
     void historyCountsWindows();
     void passwordChangeSignsOut();
+    void sessionsCanBeEnded();
+    void accountIsDeletedWithItsShares();
+    void consoleServerIsFoundInItsFolder();
     void backupAndRestoreKeepRevisions();
     void serviceCommandLineNamesTheBase();
     void plannerRecordsAreReadForDisplay();
@@ -317,6 +322,73 @@ void AdminTest::passwordChangeSignsOut()
     QVERIFY(!Api::verifyPassword(QStringLiteral("secret1"), m_storage->passwordHash(m_anna.id)));
     QCOMPARE(m_storage->tokenCount(m_anna.id), 0);
     QCOMPARE(m_storage->tokenCount(m_boris.id), 1);
+}
+
+void AdminTest::sessionsCanBeEnded()
+{
+    QString error;
+    QVERIFY2(m_admin->signOut(m_anna.id, &error), qPrintable(error));
+    QCOMPARE(m_storage->tokenCount(m_anna.id), 0);
+    QCOMPARE(m_storage->tokenCount(m_boris.id), 1);
+    // The records stay.
+    QCOMPARE(m_admin->records(m_anna.id).size(), 4);
+}
+
+void AdminTest::accountIsDeletedWithItsShares()
+{
+    QString error;
+    QVERIFY2(m_admin->deleteUser(m_anna.id, &error), qPrintable(error));
+
+    const QList<UserSummary> users = m_admin->users();
+    QCOMPARE(users.size(), 1);
+    QCOMPARE(users.first().login, QStringLiteral("boris"));
+    QCOMPARE(m_storage->tokenCount(m_boris.id), 1);
+
+    // Boris kept his twin, but the copies of Anna's records in it went, as
+    // tombstones his devices will act on.
+    const UserSummary &boris = users.first();
+    QCOMPARE(boris.events, 0);
+    QCOMPARE(boris.tasks, 0);
+    int tombstones = 0;
+    for (const StoredRecord &stored : m_admin->records(m_boris.id, true)) {
+        if (stored.deleted)
+            ++tombstones;
+    }
+    QCOMPARE(tombstones, 2);
+
+    QSqlQuery count(QSqlDatabase::database(QStringLiteral("activity")));
+    for (const QString &table : { QStringLiteral("shares"), QStringLiteral("share_members"),
+                                  QStringLiteral("share_links") }) {
+        QVERIFY(count.exec(QStringLiteral("SELECT COUNT(*) FROM %1").arg(table)) && count.next());
+        QCOMPARE(count.value(0).toInt(), 0);
+    }
+    QVERIFY(count.exec(QStringLiteral("SELECT COUNT(*) FROM records WHERE user_id = %1")
+                           .arg(m_anna.id))
+            && count.next());
+    QCOMPARE(count.value(0).toInt(), 0);
+}
+
+void AdminTest::consoleServerIsFoundInItsFolder()
+{
+    // A server in a console, started with a port and a log of its own: the
+    // settings of the folder know neither, the panel used to ask port 8765.
+    RuntimeFile server(m_dir->path());
+    QVERIFY(server.claim());
+    RuntimeInfo info;
+    info.port = 8799;
+    info.logFile = m_dir->filePath(QStringLiteral("console.log"));
+    server.publish(info);
+
+    AdminSession session({ QStringLiteral("--data-dir"), m_dir->path() },
+                         QStringLiteral("NoSuchCosmosCalendarService"), false);
+    QVERIFY(session.runtime().running);
+    QCOMPARE(session.serverPort(), quint16(8799));
+    QCOMPARE(session.logPath(), info.logFile);
+
+    server.release();
+    session.refreshStatus();
+    QVERIFY(!session.runtime().running);
+    QCOMPARE(session.serverPort(), ServerConfig::defaultPort());
 }
 
 void AdminTest::backupAndRestoreKeepRevisions()

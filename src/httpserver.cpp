@@ -155,8 +155,11 @@ void HttpServer::readFrom(QTcpSocket *socket)
         const quint32 ipv4 = request.peer.toIPv4Address(&mapped);
         if (mapped)
             request.peer = QHostAddress(ipv4);
+        // HTTP/1.1 keeps the connection unless told otherwise, HTTP/1.0 closes
+        // it unless asked to keep it.
         const QByteArray connectionHeader = request.header("connection").toLower();
-        const bool keepAlive = connectionHeader != "close";
+        const bool keepAlive = request.version == "HTTP/1.0" ? connectionHeader == "keep-alive"
+                                                             : connectionHeader != "close";
 
         HttpResponse response;
         if (m_handler) {
@@ -216,6 +219,7 @@ int HttpServer::parseRequest(QByteArray &buffer, HttpRequest &request) const
         return 0;
 
     request.method = requestLine.at(0).toUpper();
+    request.version = requestLine.at(2).toUpper();
     const QByteArray target = requestLine.at(1);
     const int question = target.indexOf('?');
     const QByteArray rawPath = question < 0 ? target : target.left(question);
@@ -246,7 +250,8 @@ void HttpServer::send(QTcpSocket *socket, const HttpResponse &response, bool kee
     head += "\r\n";
 
     socket->write(head);
-    socket->write(response.body);
+    if (!response.headOnly)
+        socket->write(response.body);
 
     if (!keepAlive) {
         // Let the answer leave before the connection goes.

@@ -5,7 +5,7 @@ CONFIG += c++17 console
 CONFIG -= app_bundle
 
 TARGET = CalendarServer
-VERSION = 1.1.1
+VERSION = 1.2.0
 DEFINES += QT_DISABLE_DEPRECATED_BEFORE=0x060000 SERVER_VERSION=\\\"$$VERSION\\\"
 
 INCLUDEPATH += src
@@ -17,6 +17,7 @@ SOURCES += \
     src/api.cpp \
     src/shares.cpp \
     src/config.cpp \
+    src/runtimefile.cpp \
     src/service.cpp
 
 HEADERS += \
@@ -25,6 +26,7 @@ HEADERS += \
     src/api.h \
     src/shares.h \
     src/config.h \
+    src/runtimefile.h \
     src/service.h
 
 # The service control manager.

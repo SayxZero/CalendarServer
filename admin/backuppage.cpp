@@ -2,6 +2,7 @@
 
 #include "adminsession.h"
 #include "look.h"
+#include "runtimefile.h"
 
 #include <QApplication>
 #include <QDir>
@@ -233,17 +234,30 @@ void BackupPage::restore(const QString &path)
 
     const ServiceControl::Status status = session()->service().status();
     const bool control = session()->viaService();
-    const bool running = status.state == ServiceControl::State::Running
-                         || status.state == ServiceControl::State::Starting;
-    // A server the panel cannot stop - another service, or one in a console -
-    // would go on writing into the base being replaced.
-    if ((running && !control) || (!running && session()->ping().answered)) {
+    // The service matters only when it is the server of this base: opened on
+    // a folder of its own, the panel used to refuse because the service was
+    // running - with another base altogether.
+    const bool running = control
+                         && (status.state == ServiceControl::State::Running
+                             || status.state == ServiceControl::State::Starting);
+    // Whatever runs on this base holds server.lock in its folder, the service
+    // or a console server on a port of its own; a server the panel cannot
+    // stop would go on writing into the base being replaced.
+    const QString folder = session()->config().resolvedDataDir();
+    const RuntimeInfo runtime = RuntimeFile::read(folder);
+    if (runtime.running && !(running && runtime.service)) {
         QMessageBox::warning(this, title,
-                             QStringLiteral("На порту %1 работает сервер, которым панель не "
-                                            "управляет. Остановите его и повторите.")
-                                 .arg(session()->config().port));
+                             QStringLiteral("С этой базой работает сервер, которым панель не "
+                                            "управляет (процесс %1%2). Остановите его и повторите.")
+                                 .arg(runtime.pid)
+                                 .arg(runtime.port ? QStringLiteral(", порт %1").arg(runtime.port)
+                                                   : QString()));
         return;
     }
+    // An answer on the port of the settings is no longer asked: it came from
+    // whatever listened there - the service with a base of its own, say - and
+    // refused a restore of a base nobody used. The server ships with the panel
+    // and holds the lock from version 1.2 on.
 
     QString question = QStringLiteral("Заменить базу сервера копией %1?\n\n"
                                       "В копии аккаунтов: %2, записей: %3, последняя активность: %4.")
@@ -280,10 +294,24 @@ void BackupPage::restore(const QString &path)
             return;
         }
     }
+    // The base is the panel's while it is replaced: a server started meanwhile
+    // - by hand, or the service by the system - finds the folder taken and
+    // does not open the half-written file.
+    RuntimeFile guard(folder);
+    QString held;
+    if (!guard.claim(&held)) {
+        if (running)
+            service.start(&error);
+        QApplication::restoreOverrideCursor();
+        session()->refreshStatus();
+        QMessageBox::warning(this, title, QStringLiteral("База занята, она не тронута: %1.").arg(held));
+        return;
+    }
     session()->releaseDatabase();
     const RestoreOutcome outcome =
         Backups::restore(path, session()->databasePath(), session()->backupFolder());
     session()->reopenDatabase();
+    guard.release();
     QString startError;
     bool started = true;
     if (running) {

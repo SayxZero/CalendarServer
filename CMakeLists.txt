@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.16)
 
 project(CalendarServer
-    VERSION 1.1.1
+    VERSION 1.2.0
     DESCRIPTION "Sync server of the calendar planner"
     LANGUAGES CXX)
 
@@ -24,6 +24,8 @@ set(SERVER_CORE_SOURCES
     src/shares.h
     src/config.cpp
     src/config.h
+    src/runtimefile.cpp
+    src/runtimefile.h
     src/service.cpp
     src/service.h)
 
@@ -51,6 +53,8 @@ install(TARGETS CalendarServer RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
 set(ADMIN_DATA_SOURCES
     admin/admindb.cpp
     admin/admindb.h
+    admin/adminsession.cpp
+    admin/adminsession.h
     admin/backups.cpp
     admin/backups.h
     admin/records.cpp
@@ -78,8 +82,6 @@ endif()
 if(SERVER_BUILD_ADMIN AND Qt6Widgets_FOUND)
     add_executable(CalendarServerAdmin WIN32
         admin/main.cpp
-        admin/adminsession.cpp
-        admin/adminsession.h
         admin/backuppage.cpp
         admin/backuppage.h
         admin/chart.cpp

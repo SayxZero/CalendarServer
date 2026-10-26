@@ -18,6 +18,7 @@ class QTimer;
 struct HttpRequest
 {
     QByteArray method;
+    QByteArray version;    //!< "HTTP/1.1" or "HTTP/1.0"
     QString path;          //!< decoded path without the query, e.g. "/api/sync"
     QUrlQuery query;
     QHash<QByteArray, QByteArray> headers;
@@ -33,6 +34,11 @@ struct HttpResponse
     QByteArray contentType = "application/json; charset=utf-8";
     QByteArray body;
     QHash<QByteArray, QByteArray> headers;
+    /*!
+     * The answer to HEAD: the headers of the GET it stands for, its
+     * Content-Length included, and no body.
+     */
+    bool headOnly = false;
 
     static HttpResponse json(int status, const QByteArray &body);
 };

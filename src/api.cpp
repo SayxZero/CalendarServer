@@ -15,8 +15,43 @@
 
 namespace {
 
+/*! Wrong passwords for one login from one address, and for one account's own password. */
 const int kMaxFailures = 10;
+/*! Wrong passwords from one address whatever the login: guessing through many accounts. */
+const int kMaxAddressFailures = 50;
 const qint64 kFailureWindowMs = 10 * 60 * 1000;
+
+/*!
+ * A moment of a change further ahead of the server's clock than this is a
+ * device whose clock is wrong. Taken as it is, it would win against every
+ * later edit of the record on every other device for as long as the clock
+ * was ahead - years, for a phone that thinks it is 2036.
+ */
+const qint64 kFutureToleranceMs = 10 * 60 * 1000;
+
+/*! The methods each route answers; anything else under /api/ is 404. */
+const QHash<QString, QList<QByteArray>> &routes()
+{
+    static const QHash<QString, QList<QByteArray>> table = {
+        { QStringLiteral("/"), { "GET", "HEAD" } },
+        { QStringLiteral("/api/ping"), { "GET", "HEAD" } },
+        { QStringLiteral("/api/register"), { "POST" } },
+        { QStringLiteral("/api/login"), { "POST" } },
+        { QStringLiteral("/api/logout"), { "POST" } },
+        { QStringLiteral("/api/me"), { "GET" } },
+        { QStringLiteral("/api/profile"), { "POST" } },
+        { QStringLiteral("/api/password"), { "POST" } },
+        { QStringLiteral("/api/sync"), { "POST" } },
+        { QStringLiteral("/api/record"), { "GET" } },
+        { QStringLiteral("/api/share"), { "GET", "POST" } },
+        { QStringLiteral("/api/share/member"), { "POST" } },
+        { QStringLiteral("/api/share/link"), { "POST" } },
+        { QStringLiteral("/api/share/peek"), { "GET" } },
+        { QStringLiteral("/api/share/join"), { "POST" } },
+        { QStringLiteral("/api/share/leave"), { "POST" } },
+    };
+    return table;
+}
 
 QByteArray randomBytes(int count)
 {
@@ -70,19 +105,22 @@ HttpResponse Api::handle(const HttpRequest &request)
 
     const auto needs = [&](const char *expected) { return method == expected; };
 
-    if (path == QLatin1String("/api/ping") || path == QLatin1String("/")) {
-        response = needs("GET") || needs("HEAD") ? ping()
-                                                  : error(405, QStringLiteral("method"),
-                                                          QStringLiteral("Метод не поддерживается"));
+    // An unknown path is 404 and a known one asked the wrong way is 405 -
+    // before the token is even looked at: neither is a question of who asks.
+    const auto route = routes().constFind(path);
+    if (route == routes().constEnd()) {
+        response = error(404, QStringLiteral("not_found"), QStringLiteral("Неизвестный запрос"));
+    } else if (!route->contains(method)) {
+        response = error(405, QStringLiteral("method"), QStringLiteral("Метод не поддерживается"));
+        QByteArrayList allowed = *route;
+        response.headers.insert("Allow", allowed.join(", "));
+    } else if (path == QLatin1String("/api/ping") || path == QLatin1String("/")) {
+        response = ping();
     } else if (path == QLatin1String("/api/register")) {
-        response = needs("POST") ? registerUser(request)
-                                 : error(405, QStringLiteral("method"),
-                                         QStringLiteral("Метод не поддерживается"));
+        response = registerUser(request);
     } else if (path == QLatin1String("/api/login")) {
-        response = needs("POST") ? login(request)
-                                 : error(405, QStringLiteral("method"),
-                                         QStringLiteral("Метод не поддерживается"));
-    } else if (path.startsWith(QLatin1String("/api/"))) {
+        response = login(request);
+    } else {
         const qint64 userId = authenticate(request);
         if (!userId) {
             response = error(401, QStringLiteral("unauthorized"),
@@ -113,16 +151,12 @@ HttpResponse Api::handle(const HttpRequest &request)
             response = shareJoin(request, userId);
         } else if (path == QLatin1String("/api/share/leave") && needs("POST")) {
             response = shareLeave(request, userId);
-        } else {
-            response = error(404, QStringLiteral("not_found"),
-                             QStringLiteral("Неизвестный запрос"));
         }
-    } else {
-        response = error(404, QStringLiteral("not_found"), QStringLiteral("Неизвестный запрос"));
     }
 
+    // The headers of the GET, Content-Length included, and no body.
     if (method == "HEAD")
-        response.body.clear();
+        response.headOnly = true;
 
     qInfo().noquote() << QStringLiteral("%1 %2 %3 -> %4 (%5 мс)")
                              .arg(request.peer.toString(), QString::fromLatin1(method), path)
@@ -206,8 +240,10 @@ QString Api::passwordProblem(const QString &password)
 
 qint64 Api::authenticate(const HttpRequest &request, QByteArray *tokenHashOut)
 {
+    // The scheme is case-insensitive (RFC 7235): "bearer" from a proxy or a
+    // script is as good as "Bearer".
     const QByteArray header = request.header("authorization");
-    if (!header.startsWith("Bearer "))
+    if (header.size() < 7 || header.left(7).toLower() != "bearer ")
         return 0;
     const QString token = QString::fromLatin1(header.mid(7).trimmed());
     if (token.isEmpty())
@@ -238,10 +274,20 @@ QJsonObject Api::userJson(qint64 userId)
     return object;
 }
 
-bool Api::isThrottled(const QHostAddress &peer)
+QString Api::loginKey(const QHostAddress &peer, const QString &login)
+{
+    return QStringLiteral("login %1 %2").arg(peer.toString(), login.toLower());
+}
+
+QString Api::peerKey(const QHostAddress &peer)
+{
+    return QStringLiteral("peer %1").arg(peer.toString());
+}
+
+bool Api::isThrottled(const QString &key, int limit)
 {
     const qint64 now = QDateTime::currentMSecsSinceEpoch();
-    auto it = m_failures.find(peer.toString());
+    auto it = m_failures.find(key);
     if (it == m_failures.end())
         return false;
     QList<qint64> &times = it.value();
@@ -252,12 +298,30 @@ bool Api::isThrottled(const QHostAddress &peer)
         m_failures.erase(it);
         return false;
     }
-    return times.size() >= kMaxFailures;
+    return times.size() >= limit;
 }
 
-void Api::noteFailure(const QHostAddress &peer)
+void Api::noteFailure(const QString &key)
 {
-    m_failures[peer.toString()].append(QDateTime::currentMSecsSinceEpoch());
+    m_failures[key].append(QDateTime::currentMSecsSinceEpoch());
+    // Keys of addresses and logins nobody tries again would stay for ever.
+    if (++m_failuresNoted % 256 == 0)
+        forgetOldFailures();
+}
+
+void Api::forgetOldFailures()
+{
+    const qint64 now = QDateTime::currentMSecsSinceEpoch();
+    for (auto it = m_failures.begin(); it != m_failures.end();) {
+        QList<qint64> &times = it.value();
+        times.erase(std::remove_if(times.begin(), times.end(),
+                                   [now](qint64 at) { return now - at > kFailureWindowMs; }),
+                    times.end());
+        if (times.isEmpty())
+            it = m_failures.erase(it);
+        else
+            ++it;
+    }
 }
 
 // ------------------------------------------------------------------ routes
@@ -320,12 +384,6 @@ HttpResponse Api::registerUser(const HttpRequest &request)
 
 HttpResponse Api::login(const HttpRequest &request)
 {
-    if (isThrottled(request.peer)) {
-        return error(429, QStringLiteral("throttled"),
-                     QStringLiteral("Слишком много неудачных попыток. Попробуйте через "
-                                    "несколько минут"));
-    }
-
     QJsonObject body;
     HttpResponse failure;
     if (!parseBody(request, &body, &failure))
@@ -333,9 +391,17 @@ HttpResponse Api::login(const HttpRequest &request)
 
     const QString login = body.value(QStringLiteral("login")).toString().trimmed();
     const QString password = body.value(QStringLiteral("password")).toString();
+    if (isThrottled(loginKey(request.peer, login), kMaxFailures)
+        || isThrottled(peerKey(request.peer), kMaxAddressFailures)) {
+        return error(429, QStringLiteral("throttled"),
+                     QStringLiteral("Слишком много неудачных попыток. Попробуйте через "
+                                    "несколько минут"));
+    }
+
     const UserInfo user = m_storage->userByLogin(login);
     if (!user.isValid() || !verifyPassword(password, m_storage->passwordHash(user.id))) {
-        noteFailure(request.peer);
+        noteFailure(loginKey(request.peer, login));
+        noteFailure(peerKey(request.peer));
         return error(401, QStringLiteral("wrong_credentials"),
                      QStringLiteral("Неверный логин или пароль"));
     }
@@ -393,8 +459,16 @@ HttpResponse Api::changePassword(const HttpRequest &request, qint64 userId)
 
     const QString oldPassword = body.value(QStringLiteral("oldPassword")).toString();
     const QString newPassword = body.value(QStringLiteral("newPassword")).toString();
+    // A token in the wrong hands must not become a way to guess the password
+    // it was issued for.
+    const QString account = QStringLiteral("password %1").arg(userId);
+    if (isThrottled(account, kMaxFailures)) {
+        return error(429, QStringLiteral("throttled"),
+                     QStringLiteral("Слишком много неудачных попыток. Попробуйте через "
+                                    "несколько минут"));
+    }
     if (!verifyPassword(oldPassword, m_storage->passwordHash(userId))) {
-        noteFailure(request.peer);
+        noteFailure(account);
         return error(403, QStringLiteral("wrong_credentials"),
                      QStringLiteral("Текущий пароль указан неверно"));
     }
@@ -418,6 +492,8 @@ HttpResponse Api::sync(const HttpRequest &request, qint64 userId)
 
     const qint64 since = qint64(body.value(QStringLiteral("since")).toDouble(0));
     const QString device = body.value(QStringLiteral("device")).toString();
+    const qint64 now = QDateTime::currentMSecsSinceEpoch();
+    int clamped = 0;
 
     QList<SyncRecord> incoming;
     const QJsonArray changes = body.value(QStringLiteral("changes")).toArray();
@@ -435,6 +511,11 @@ HttpResponse Api::sync(const HttpRequest &request, qint64 userId)
             return error(400, QStringLiteral("invalid"),
                          QStringLiteral("Неверная запись в списке изменений"));
         }
+        // The clock of the device is ahead: the change counts as made now.
+        if (record.modified > now + kFutureToleranceMs) {
+            record.modified = now;
+            ++clamped;
+        }
         if (!record.deleted) {
             const QJsonValue data = change.value(QStringLiteral("data"));
             if (!data.isObject()) {
@@ -444,6 +525,15 @@ HttpResponse Api::sync(const HttpRequest &request, qint64 userId)
             record.data = QJsonDocument(data.toObject()).toJson(QJsonDocument::Compact);
         }
         incoming.append(record);
+    }
+
+    if (clamped > 0) {
+        qWarning().noquote() << QStringLiteral("%1: часы устройства %2 спешат, время правки "
+                                               "записей (%3) взято по серверу")
+                                    .arg(request.peer.toString(),
+                                         device.isEmpty() ? QStringLiteral("без имени")
+                                                          : QStringLiteral("«%1»").arg(device))
+                                    .arg(clamped);
     }
 
     const SyncOutcome outcome = m_storage->sync(userId, since, incoming, device);

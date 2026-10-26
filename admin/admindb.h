@@ -187,6 +187,16 @@ public:
      */
     bool setPassword(qint64 userId, const QString &password, QString *error);
 
+    /*! Signs every device out of the account; the records stay. */
+    bool signOut(qint64 userId, QString *error);
+
+    /*!
+     * Deletes the account with its records, sessions and history, the way
+     * --delete-user does. The members of its shared calendars lose their
+     * copies, which their devices delete at the next exchange.
+     */
+    bool deleteUser(qint64 userId, QString *error);
+
     // ---- statistics ----------------------------------------------------------
     ServerTotals totals(const QDateTime &now = QDateTime::currentDateTime());
 
@@ -204,4 +214,5 @@ private:
     QString m_lastError;
     int m_schemaVersion = 0;
     bool m_tracked = false;
+    bool m_shared = false;   //!< the base knows shared calendars (version 2 on)
 };
