@@ -16,6 +16,9 @@
  * with a rounded data end and a gap between them, a legend for more than one
  * series. Hovering (or the arrow keys, once the chart has focus) shows every
  * series at that point; the same numbers are in the table next to the chart.
+ *
+ * A value that is NaN is a gap - the server was not running then: the line
+ * breaks there and the tooltip says "—".
  */
 class Chart : public QWidget
 {
@@ -48,6 +51,16 @@ public:
     /*! The text in place of the chart when every value is zero or there are none. */
     void setEmptyText(const QString &text);
 
+    /*!
+     * Values with @p decimals digits after the comma (the axis then steps in
+     * fractions too) and @p suffix after them, " мс" or " %". Whole numbers
+     * without a suffix by default.
+     */
+    void setValueFormat(int decimals, const QString &suffix = QString());
+
+    /*! The text of a value as the tooltip and the end of a line write it; "—" for a gap. */
+    QString valueText(double value) const;
+
     QSize sizeHint() const override;
     QSize minimumSizeHint() const override;
 
@@ -67,6 +80,9 @@ private:
     };
 
     Frame frame() const;
+
+    /*! The label of a gridline: as many decimals as the step between them needs. */
+    QString axisText(double value, double step) const;
     double xOf(const Frame &frame, int index) const;
     double yOf(const Frame &frame, double value) const;
     int indexAt(const Frame &frame, double x) const;
@@ -78,5 +94,7 @@ private:
     QStringList m_titles;
     QList<Series> m_series;
     QString m_emptyText;
+    int m_decimals = 0;
+    QString m_suffix;
     int m_hover = -1;
 };

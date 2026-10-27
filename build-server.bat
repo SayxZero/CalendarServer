@@ -63,11 +63,13 @@ echo.
 echo [3/3] Тесты...
 call :runtests tst_server || goto :fail
 call :runtests tst_admin || goto :fail
+call :runtests tst_bench || goto :fail
 
 echo.
 echo ============================================================
 echo   ГОТОВО: %SERVER_BUILD%\CalendarServer.exe
 echo           %SERVER_BUILD%\CalendarServerAdmin.exe
+echo           %SERVER_BUILD%\CalendarServerBench.exe
 echo ============================================================
 echo   Запуск: run-server.bat; админ-панель: CalendarServerAdmin.exe -d ^<папка^>
 echo.

@@ -8,6 +8,8 @@ class Page;
 class QLabel;
 class QListWidget;
 class QStackedWidget;
+class LoadPage;
+class ThreadsPage;
 class StatsPage;
 class UsersPage;
 
@@ -44,4 +46,6 @@ private:
     QList<Page *> m_pages;
     UsersPage *m_users = nullptr;
     StatsPage *m_stats = nullptr;
+    LoadPage *m_load = nullptr;
+    ThreadsPage *m_threads = nullptr;
 };

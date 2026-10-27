@@ -210,12 +210,17 @@ void ServerPage::showStatus()
 
     const bool idle = status.state == ServiceControl::State::Stopped;
     const bool running = status.state == ServiceControl::State::Running;
+    // While the benchmark measures this machine the server waits: next to
+    // it the server would slow its clients down and spoil the measurement.
+    const bool benchmark = session()->benchmarkRunning();
     m_start->setVisible(!running && status.state != ServiceControl::State::Missing);
-    m_start->setEnabled(control && idle);
+    m_start->setEnabled(control && idle && !benchmark);
+    m_start->setToolTip(benchmark ? QStringLiteral("Идёт бенчмарк — запустите сервер, когда он закончится")
+                                  : QString());
     m_stop->setVisible(running);
     m_stop->setEnabled(control);
     m_restart->setVisible(running);
-    m_restart->setEnabled(control);
+    m_restart->setEnabled(control && !benchmark);
 }
 
 void ServerPage::showOwnFolderStatus()

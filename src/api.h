@@ -6,8 +6,22 @@
 #include <QHash>
 #include <QJsonObject>
 #include <QList>
+#include <QMutex>
+
+#include <memory>
 
 class Storage;
+
+/*!
+ * The wrong passwords the server remembers, shared by the Api of every
+ * worker thread: a guess counts wherever it lands.
+ */
+struct LoginThrottle
+{
+    QMutex lock;
+    QHash<QString, QList<qint64>> failures;
+    int noted = 0;
+};
 
 /*!
  * The JSON API of the server. Every answer is a JSON object; a failure has
@@ -40,7 +54,13 @@ class Api
 public:
     static constexpr int apiVersion() { return 1; }
 
-    Api(Storage *storage, const ServerConfig &config);
+    /*!
+     * One Api per thread, on the Storage of that thread. @p throttle is the
+     * memory of wrong passwords the threads share; without one the Api keeps
+     * its own.
+     */
+    Api(Storage *storage, const ServerConfig &config,
+        std::shared_ptr<LoginThrottle> throttle = nullptr);
 
     HttpResponse handle(const HttpRequest &request);
 
@@ -81,8 +101,12 @@ private:
     /*! The user behind the bearer token, 0 when there is none or it is not valid. */
     qint64 authenticate(const HttpRequest &request, QByteArray *tokenHashOut = nullptr);
 
-    /*! A new token for the user, stored as a hash; the plain text goes to the device only. */
-    QString issueToken(qint64 userId, const QString &device);
+    /*!
+     * A new token for the user, stored as a hash through @p storage (the one
+     * of a transaction, Storage::transact()); the plain text goes to the
+     * device only.
+     */
+    static QString issueToken(Storage &storage, qint64 userId, const QString &device);
     QJsonObject userJson(qint64 userId);
 
     /*!
@@ -94,7 +118,7 @@ private:
      */
     bool isThrottled(const QString &key, int limit);
     void noteFailure(const QString &key);
-    void forgetOldFailures();
+    void forgetOldFailures();   //!< with the lock of m_throttle held
     static QString loginKey(const QHostAddress &peer, const QString &login);
     static QString peerKey(const QHostAddress &peer);
 
@@ -104,6 +128,5 @@ private:
 
     Storage *m_storage = nullptr;
     ServerConfig m_config;
-    QHash<QString, QList<qint64>> m_failures;
-    int m_failuresNoted = 0;
+    std::shared_ptr<LoginThrottle> m_throttle;
 };

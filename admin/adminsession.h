@@ -90,6 +90,13 @@ public:
 
     /*! Asks for the state at once, not at the next tick. */
     void refreshStatus();
+
+    /*!
+     * The benchmark of the page "Многопоточность" is running: the server is
+     * not to be started meanwhile - it would measure itself.
+     */
+    bool benchmarkRunning() const { return m_benchmarkRunning; }
+    void setBenchmarkRunning(bool running);
     void refreshPing();
 
 signals:
@@ -115,4 +122,5 @@ private:
     QTimer *m_statusTimer = nullptr;
     QTimer *m_pingTimer = nullptr;
     bool m_pinging = false;
+    bool m_benchmarkRunning = false;
 };

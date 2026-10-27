@@ -4,6 +4,7 @@
 
 #include <QFontMetricsF>
 #include <QKeyEvent>
+#include <QLocale>
 #include <QMouseEvent>
 #include <QPainter>
 #include <QPainterPath>
@@ -19,21 +20,19 @@ const double kBarMax = 24;
 const double kBarGap = 2;
 const double kDotRadius = 4;
 
-/*! The step between gridlines: 1, 2 or 5 times a power of ten, whole numbers only. */
-double niceStep(double top, int lines)
+/*!
+ * The step between gridlines: 1, 2 or 5 times a power of ten, whole numbers
+ * only unless @p smallest allows less.
+ */
+double niceStep(double top, int lines, double smallest)
 {
-    const double raw = qMax(1.0, top / lines);
+    const double raw = qMax(smallest, top / lines);
     const double power = std::pow(10.0, std::floor(std::log10(raw)));
     for (const double factor : { 1.0, 2.0, 5.0, 10.0 }) {
         if (factor * power >= raw)
-            return qMax(1.0, factor * power);
+            return qMax(smallest, factor * power);
     }
     return 10 * power;
-}
-
-QString valueText(double value)
-{
-    return Look::number(qint64(std::llround(value)));
 }
 
 } // namespace
@@ -71,6 +70,34 @@ void Chart::setEmptyText(const QString &text)
     update();
 }
 
+void Chart::setValueFormat(int decimals, const QString &suffix)
+{
+    m_decimals = qBound(0, decimals, 3);
+    m_suffix = suffix;
+    update();
+}
+
+QString Chart::axisText(double value, double step) const
+{
+    // The gridlines step in whole numbers or in fractions: their labels all
+    // carry the same number of decimals, "50" next to "100", not "50,0".
+    if (m_decimals == 0 || step >= 1)
+        return Look::number(qint64(std::llround(value))) + m_suffix;
+    const int decimals = qMin(m_decimals, int(std::ceil(-std::log10(step) - 1e-9)));
+    return QLocale(QLocale::Russian).toString(value, 'f', decimals) + m_suffix;
+}
+
+QString Chart::valueText(double value) const
+{
+    if (std::isnan(value))
+        return QStringLiteral("—");
+    if (m_decimals == 0)
+        return Look::number(qint64(std::llround(value))) + m_suffix;
+    // Small values keep their fraction, big ones do not need it.
+    const int decimals = std::abs(value) >= 100 ? 0 : m_decimals;
+    return QLocale(QLocale::Russian).toString(value, 'f', decimals) + m_suffix;
+}
+
 QSize Chart::sizeHint() const
 {
     return QSize(640, 240);
@@ -85,7 +112,7 @@ bool Chart::isEmpty() const
 {
     for (const Series &series : m_series) {
         for (const double value : series.values) {
-            if (value > 0)
+            if (value > 0)   // a gap is NaN, and NaN is not above zero
                 return false;
         }
     }
@@ -97,27 +124,34 @@ Chart::Frame Chart::frame() const
     Frame result;
     double top = 0;
     for (const Series &series : m_series) {
-        for (const double value : series.values)
-            top = qMax(top, value);
+        for (const double value : series.values) {
+            if (!std::isnan(value))
+                top = qMax(top, value);
+        }
     }
-    const double step = niceStep(qMax(top, 4.0), 4);
-    result.top = std::ceil(qMax(top, 1.0) / step) * step;
+    const double smallest = m_decimals > 0 ? std::pow(10.0, -m_decimals) : 1.0;
+    const double floor = m_decimals > 0 ? 4 * smallest : 4.0;
+    const double step = niceStep(qMax(top, floor), 4, smallest);
+    result.top = std::ceil(qMax(top, smallest) / step - 1e-9) * step;
     for (double value = 0; value <= result.top + step / 2; value += step)
         result.gridValues << value;
 
     const QFontMetricsF metrics(font());
     double labelWidth = 0;
     for (const double value : result.gridValues)
-        labelWidth = qMax(labelWidth, metrics.horizontalAdvance(valueText(value)));
+        labelWidth = qMax(labelWidth, metrics.horizontalAdvance(axisText(value, step)));
 
     const double legend = m_series.size() > 1 ? kLegendHeight : 4;
     // The lines carry their last value at the right end.
     double endLabels = 8;
     if (m_form == Form::Lines) {
         for (const Series &series : m_series) {
-            if (!series.values.isEmpty()) {
+            for (int i = int(series.values.size()) - 1; i >= 0; --i) {
+                if (std::isnan(series.values.at(i)))
+                    continue;
                 endLabels = qMax(endLabels, kDotRadius * 2 + 6
-                                                + metrics.horizontalAdvance(valueText(series.values.last())));
+                                                + metrics.horizontalAdvance(valueText(series.values.at(i))));
+                break;
             }
         }
     }
@@ -200,7 +234,8 @@ void Chart::paintEvent(QPaintEvent *)
         painter.setPen(QPen(value == 0 ? Look::baseline() : Look::grid(), 1));
         painter.drawLine(QPointF(f.plot.left(), y), QPointF(f.plot.right(), y));
         painter.setPen(Look::muted());
-        const QString text = valueText(value);
+        const double step = f.gridValues.size() > 1 ? f.gridValues.at(1) - f.gridValues.at(0) : 1;
+        const QString text = axisText(value, step);
         painter.drawText(QRectF(0, y - metrics.height() / 2, f.plot.left() - 8, metrics.height()),
                          Qt::AlignRight | Qt::AlignVCenter, text);
     }
@@ -229,7 +264,7 @@ void Chart::paintEvent(QPaintEvent *)
         const Series &series = m_series.first();
         for (int i = 0; i < count && i < series.values.size(); ++i) {
             const double value = series.values.at(i);
-            if (value <= 0)
+            if (std::isnan(value) || value <= 0)
                 continue;
             const double x = xOf(f, i) - barWidth / 2;
             const double y = yOf(f, value);
@@ -260,25 +295,48 @@ void Chart::paintEvent(QPaintEvent *)
         for (const Series &series : m_series) {
             if (series.values.isEmpty())
                 continue;
+            // A gap breaks the line; a point alone between two gaps gets a dot.
             QPainterPath path;
+            QList<QPointF> lonely;
+            bool drawing = false;
             for (int i = 0; i < series.values.size(); ++i) {
-                const QPointF point(xOf(f, i), yOf(f, series.values.at(i)));
-                if (i == 0)
-                    path.moveTo(point);
-                else
+                const double value = series.values.at(i);
+                if (std::isnan(value)) {
+                    drawing = false;
+                    continue;
+                }
+                const QPointF point(xOf(f, i), yOf(f, value));
+                if (drawing) {
                     path.lineTo(point);
+                } else {
+                    path.moveTo(point);
+                    const bool nextGap = i + 1 >= series.values.size()
+                                         || std::isnan(series.values.at(i + 1));
+                    if (nextGap)
+                        lonely << point;
+                }
+                drawing = true;
             }
             painter.setPen(QPen(series.color, 2, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
             painter.setBrush(Qt::NoBrush);
             painter.drawPath(path);
+            painter.setPen(Qt::NoPen);
+            painter.setBrush(series.color);
+            for (const QPointF &point : std::as_const(lonely))
+                painter.drawEllipse(point, 1.5, 1.5);
 
-            const int last = int(series.values.size()) - 1;
+            int last = int(series.values.size()) - 1;
+            while (last >= 0 && std::isnan(series.values.at(last)))
+                --last;
+            if (last < 0)
+                continue;
             const QPointF end(xOf(f, last), yOf(f, series.values.at(last)));
             painter.setPen(QPen(Look::surface(), 2));
             painter.setBrush(series.color);
             painter.drawEllipse(end, kDotRadius + 1, kDotRadius + 1);
             endLabels.append(qMakePair(end.y(), valueText(series.values.at(last))));
-            if (m_hover >= 0 && m_hover < series.values.size()) {
+            if (m_hover >= 0 && m_hover < series.values.size()
+                && !std::isnan(series.values.at(m_hover))) {
                 const QPointF at(xOf(f, m_hover), yOf(f, series.values.at(m_hover)));
                 painter.drawEllipse(at, kDotRadius + 1, kDotRadius + 1);
             }

@@ -12,3 +12,23 @@ allow_registration=true
 max_body_mb=64
 ; A device that has not synced for this many days has to sign in again.
 token_lifetime_days=365
+; Threads that answer requests; 0 - as many as the processor runs at once.
+threads=0
+; How requests wait for a free thread: fair (clients take turns), fifo,
+; round_robin, least_loaded. Anything but fair is for comparisons.
+dispatch=fair
+; Connections at once; more wait in the queue of the system until one frees.
+max_connections=1024
+; Request bodies held in memory at once, MB; past it the next ones wait.
+; 0 - an eighth of the memory the server may have.
+buffer_mb=0
+; A request that waited this long for a thread gets 503 "try later".
+max_queue_wait_seconds=30
+; Group commit: the writes of up to this many requests go to the disk in one
+; transaction, with one fsync. 0 - every request commits on its own. On a
+; hard disk the number of writes a second depends on it.
+group_commit=64
+; full - an fsync for every commit, nothing written is ever lost; normal -
+; much faster on a hard disk, but a power cut loses the exchanges of the last
+; seconds, which the devices take for accepted. Only with a UPS.
+sync_mode=full

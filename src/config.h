@@ -68,6 +68,72 @@ struct ServerConfig
     /*! PBKDF2 rounds; lowered only by the tests, which hash many passwords. */
     int passwordIterations = 120000;
 
+    // ---- load ----------------------------------------------------------------
+    /*!
+     * Threads that answer requests; 0 - as many as the processor runs at
+     * once, and never fewer than two.
+     */
+    int threads = 0;
+
+    /*!
+     * How requests wait for a thread: "fair", "fifo", "round_robin",
+     * "least_loaded" (workerpool.h). Anything but the default is for
+     * comparisons.
+     */
+    QString dispatch = QStringLiteral("fair");
+
+    /*! Connections at once; past it new ones wait in the queue of the system. */
+    int maxConnections = 1024;
+
+    /*!
+     * Request bodies held in memory at once, MB; past it the next bodies wait.
+     * 0 - an eighth of the memory the process may have (the RAM, or less
+     * when a job object or a cgroup limits it), between 16 MB and 1 GB, and
+     * never less than one body of the largest size.
+     */
+    int bufferMb = 0;
+
+    /*! A request that waited for a thread longer than this gets 503 instead of an answer. */
+    int maxQueueWaitSeconds = 30;
+
+    /*!
+     * Group commit: the writes of up to this many requests go to the disk in
+     * one transaction, with one fsync. 0 - every request commits on its own.
+     * On a hard disk it is what the number of writes a second depends on.
+     */
+    int groupCommit = 64;
+
+    /*!
+     * "full" - a commit is on the disk before the answer leaves (an fsync
+     * each); "normal" - the log is synced at checkpoints, and a power cut may
+     * lose the last seconds of exchanges, never the base.
+     */
+    QString syncMode = QStringLiteral("full");
+
+    /*! What a request body weighs in memory while it is answered, in its own sizes. */
+    static constexpr int bodyMemoryFactor() { return 8; }
+
+    /*! The threads this config asks for, 0 resolved. */
+    int resolvedThreads() const;
+
+    /*! The budget of request bodies in bytes, 0 resolved; a body counts bodyMemoryFactor() times. */
+    qint64 resolvedBufferBytes() const;
+
+    /*!
+     * The load settings as they go into the [server] group of an INI file
+     * (the admin panel writes them, the benchmark recommends them), and
+     * which keys those are.
+     */
+    static QStringList loadKeys();
+    QString loadValue(const QString &key) const;
+
+    /*!
+     * The memory this process may have: the RAM of the machine, or the limit
+     * of the job object (Windows) or the cgroup (Linux) it runs in when that
+     * is smaller. -1 when unknown.
+     */
+    static qint64 memoryLimit();
+
     /*! Reads the [server] group of @p path; returns false with @p error when it fails. */
     bool loadIni(const QString &path, QString *error);
 

@@ -5,9 +5,11 @@
 #include <QByteArray>
 #include <QDateTime>
 #include <QList>
+#include <QSet>
 #include <QSqlDatabase>
 #include <QString>
 
+#include <functional>
 #include <memory>
 
 struct UserInfo
@@ -82,8 +84,29 @@ struct SyncOutcome
 };
 
 /*!
+ * How the writes of one base went: how long they waited for their turn and
+ * for the commit, and how many operations a commit carried.
+ */
+struct GateStats
+{
+    qint64 writes = 0;      //!< write operations (transact()) that went through
+    qint64 waitNs = 0;      //!< all of them waiting for their turn and commit together
+    qint64 holdNs = 0;      //!< transactions holding the write lock
+    qint64 maxWaitNs = 0;   //!< the longest wait since the previous takeGateStats()
+    qint64 commits = 0;     //!< transactions committed: writes / commits = operations per fsync
+};
+
+struct BaseShared;
+
+/*!
  * SQLite persistence of the server: accounts, login tokens and the records of
- * every user. All calls happen on the one thread the server runs on.
+ * every user.
+ *
+ * One Storage is one connection, and it belongs to the thread that opened it:
+ * the server gives every worker thread a Storage of its own (Qt allows a
+ * connection on one thread only). Every Storage of one process on the same
+ * file shares a BaseShared - the gate writes go through one at a time
+ * (Storage::Write) and what is counted in memory to be written later.
  */
 class Storage
 {
@@ -94,9 +117,99 @@ public:
     Storage(const Storage &) = delete;
     Storage &operator=(const Storage &) = delete;
 
-    bool open(const QString &path, QString *error = nullptr);
+    /*!
+     * Create: brings the schema up to this version, as the first connection
+     * of a process does. Attach: one more connection to a base another
+     * Storage of the process has already prepared - a worker thread's.
+     */
+    enum class OpenMode { Create, Attach };
+
+    bool open(const QString &path, QString *error = nullptr, OpenMode mode = OpenMode::Create);
     void close();
     QString lastError() const { return m_lastError; }
+
+    /*!
+     * What a commit waits for (PRAGMA synchronous). Full: the commit is on
+     * the disk when it returns - an fsync each time. Normal: the WAL is synced
+     * at checkpoints only; a power cut loses the last commits (never the base),
+     * and on a hard disk a commit is a hundred times cheaper. Set on the
+     * first connection, it holds for every connection of the process to the base.
+     */
+    enum class Durability { Full, Normal };
+    void setDurability(Durability durability);
+
+    /*! PRAGMA synchronous of this connection as SQLite has it: 2 full, 1 normal. */
+    int synchronousMode();
+
+    /*!
+     * Runs @p work - the writes of one operation, all or none - in a write
+     * transaction, and returns once it is committed. @p work gets the Storage
+     * to work on, which need not be this one, and must use only it.
+     *
+     * With group commit on (enableGroupCommit()) the work runs on the commit
+     * thread of the base, in one transaction with the operations other
+     * threads sent meanwhile, each under a savepoint of its own: one fsync
+     * for all of them, and a failure rolls back only its own operation.
+     * Without it the work runs here, in a Write of this connection. Inside
+     * a transaction of this connection already, it is a part of it.
+     */
+    bool transact(const std::function<bool(Storage &)> &work);
+
+    /*!
+     * Group commit for the base of this Storage: a thread of its own with a
+     * connection of its own runs the operations of transact() in batches of
+     * up to @p batch per transaction. On a disk with slow fsync (a hard disk)
+     * that multiplies how many writes a second the server takes.
+     */
+    bool enableGroupCommit(int batch, QString *error = nullptr);
+    void disableGroupCommit();
+
+    /*!
+     * One write transaction (BEGIN IMMEDIATE). The writes of every Storage of
+     * the process on this base pass one gate one at a time: SQLite lets only
+     * one writer in anyway, and a mutex hands the turn on in order and at
+     * once, where SQLITE_BUSY makes the others sleep and try again. Another
+     * process (the admin panel) is waited for by busy_timeout. A Write inside
+     * a Write of the same Storage joins the outer one; the outermost commits,
+     * and a failure anywhere rolls the whole of it back.
+     */
+    class Write
+    {
+        friend class Storage;
+
+    public:
+        explicit Write(Storage &storage);
+        ~Write();
+
+        Write(const Write &) = delete;
+        Write &operator=(const Write &) = delete;
+
+        bool ok() const { return m_ok; }
+
+        /*! Commits the outermost transaction; an inner one only reports how it stands. */
+        bool commit();
+
+        /*! Something failed: the outermost Write rolls back instead of committing. */
+        void fail();
+
+    private:
+        Storage &m_storage;
+        bool m_outer = false;
+        bool m_ok = false;
+        bool m_done = false;
+        bool m_counted = true;   //!< one operation; a batch of the commit thread counts its own
+        qint64 m_heldSince = 0;
+    };
+
+    /*!
+     * Writes what was counted in memory: the activity of exchanges
+     * (noteSync()) and the last use of sessions. The server calls it every
+     * few seconds and on the way out; it is cheap when there is nothing.
+     */
+    bool flushPending();
+
+    /*! The gate of this base since the start; the longest wait is reset by the call. */
+    GateStats takeGateStats();
 
     /*! The version this build writes into PRAGMA user_version. */
     static int schemaVersion();
@@ -173,8 +286,11 @@ public:
     /*!
      * Counts one exchange of the user into the activity of today: how many
      * accounts sync a day, a week and a month is what the admin panel shows.
+     * It is counted in memory and written by flushPending(): a write of its
+     * own would put every exchange, a plain download too, in the line at the
+     * gate.
      */
-    bool noteSync(qint64 userId, const SyncTraffic &traffic);
+    void noteSync(qint64 userId, const SyncTraffic &traffic);
 
     int recordCount(qint64 userId, bool includeDeleted = false);
 
@@ -194,11 +310,31 @@ public:
     ShareStore &shares() { return *m_shares; }
 
 private:
+    class Committer;
+    friend struct BaseShared;
+
     bool exec(const QString &statement);
     SyncRecord recordAt(qint64 userId, const QString &kind, const QString &id, bool *found);
+
+    /*!
+     * The writing half of sync(), inside a transaction: applies @p incoming
+     * and leaves the new cursor in @p revision, what was taken in @p accepted
+     * and the stored versions that won in @p rejected.
+     */
+    bool applyChanges(qint64 userId, const QList<SyncRecord> &incoming, const QString &device,
+                      qint64 *revision, QSet<QString> *accepted, QList<SyncRecord> *rejected,
+                      QList<ShareConflict> *conflicts);
+
+    /*! The changes of @p userId in (since, upTo], for the answer of sync(). */
+    bool readChanges(qint64 userId, qint64 since, qint64 upTo, const QSet<QString> &skip,
+                     QList<SyncRecord> *changes, QSet<QString> *listed);
 
     QSqlDatabase m_db;
     QString m_connectionName;
     QString m_lastError;
     std::unique_ptr<ShareStore> m_shares;
+    std::shared_ptr<BaseShared> m_base;
+    int m_writeDepth = 0;
+    bool m_writeFailed = false;
+    bool m_ownsCommitter = false;   //!< enableGroupCommit() was called here; close() ends it
 };

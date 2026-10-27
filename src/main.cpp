@@ -1,7 +1,7 @@
 #include "api.h"
 #include "config.h"
-#include "httpserver.h"
 #include "runtimefile.h"
+#include "server.h"
 #include "service.h"
 #include "storage.h"
 
@@ -257,15 +257,12 @@ int runServer(int argc, char *argv[])
         return 1;
     }
 
-    Api api(&storage, config);
-    HttpServer server;
-    server.setMaxBodySize(qint64(config.maxBodyMb) * 1024 * 1024);
-    server.setHandler([&api](const HttpRequest &request) { return api.handle(request); });
-
-    if (!server.listen(config.host, config.port)) {
-        qCritical().noquote() << QStringLiteral("Не удалось занять порт %1: %2")
-                                     .arg(config.port)
-                                     .arg(server.errorString());
+    // The server opens the base on every thread of its own.
+    storage.close();
+    Server server(config);
+    if (!server.start(&problem)) {
+        qCritical().noquote() << problem;
+        runtime.release();
         return 1;
     }
 
@@ -275,7 +272,7 @@ int runServer(int argc, char *argv[])
     // What the admin panel cannot learn from the settings: the port given on
     // the command line, the log file, the process.
     RuntimeInfo info;
-    info.port = server.serverPort();
+    info.port = server.port();
     info.host = config.host.toString();
     info.logFile = logPath;
     info.version = QStringLiteral(SERVER_VERSION);
@@ -296,11 +293,11 @@ int runServer(int argc, char *argv[])
 
     qInfo().noquote() << QStringLiteral("CalendarServer %1 слушает порт %2%3")
                              .arg(QStringLiteral(SERVER_VERSION))
-                             .arg(server.serverPort())
+                             .arg(server.port())
                              .arg(asService ? QStringLiteral(" (служба)") : QString());
     qInfo().noquote() << "База данных:" << native(config.databasePath());
     qInfo().noquote() << "Регистрация:" << (config.allowRegistration ? "открыта" : "закрыта");
-    const QStringList addresses = config.clientAddresses(server.serverPort());
+    const QStringList addresses = config.clientAddresses(server.port());
     if (!addresses.isEmpty()) {
         qInfo().noquote() << "Адрес для клиентов:";
         for (const QString &address : addresses)
@@ -308,8 +305,7 @@ int runServer(int argc, char *argv[])
     }
 
     const int code = app.exec();
-    server.close();
-    storage.close();
+    server.stop();
     runtime.release();
     qInfo().noquote() << "Сервер остановлен";
     return code;

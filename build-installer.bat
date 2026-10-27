@@ -93,6 +93,11 @@ if not exist "%HERE%%SERVER_EXE%" (
     goto :fail
 )
 set "ADMIN_EXE=%SERVER_BUILD%\CalendarServerAdmin.exe"
+set "BENCH_EXE=%SERVER_BUILD%\CalendarServerBench.exe"
+if not exist "%HERE%%BENCH_EXE%" (
+    echo [ОШИБКА] Бенчмарк не собран: "%HERE%%BENCH_EXE%"
+    goto :fail
+)
 if not exist "%HERE%%ADMIN_EXE%" (
     echo [ОШИБКА] Админ-панель не собрана: "%HERE%%ADMIN_EXE%"
     echo           Ей нужен Qt Widgets в наборе "%SERVER_QT%".
@@ -117,6 +122,9 @@ mkdir "%WORK%\files" || goto :fail
 mkdir "%WORK%\service" || goto :fail
 copy /y "%HERE%%SERVER_EXE%" "%WORK%\files\" >nul || goto :fail
 copy /y "%HERE%%ADMIN_EXE%" "%WORK%\files\" >nul || goto :fail
+rem The benchmark needs what the server needs (Core, Network, Sql): the
+rem libraries windeployqt lays out for the server are there for it as well.
+copy /y "%HERE%%BENCH_EXE%" "%WORK%\files\" >nul || goto :fail
 copy /y "%HERE%deploy\server.ini.example" "%WORK%\files\" >nul || goto :fail
 "%SERVER_QT%\bin\windeployqt.exe" --compiler-runtime --no-translations ^
     "%WORK%\files\CalendarServer.exe" >nul || goto :fail

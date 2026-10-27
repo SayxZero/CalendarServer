@@ -2,20 +2,28 @@
 #include "adminsession.h"
 #include "api.h"
 #include "backups.h"
+#include "benchmarkrunner.h"
 #include "config.h"
+#include "inifile.h"
+#include "loadhistory.h"
+#include "metrics.h"
 #include "records.h"
 #include "runtimefile.h"
 #include "servicecontrol.h"
 #include "storage.h"
 
 #include <QFile>
+#include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QSignalSpy>
 #include <QSqlDatabase>
 #include <QSqlQuery>
 #include <QTemporaryDir>
 #include <QUuid>
 #include <QtTest>
+
+#include <cmath>
 
 /*!
  * The admin panel without its window: what it reads out of a base filled the
@@ -43,6 +51,11 @@ private slots:
     void serviceCommandLineNamesTheBase();
     void plannerRecordsAreReadForDisplay();
     void missingServiceIsReported();
+    void loadHistoryHasGapsAndRates();
+    void loadOfNowGoesStale();
+    void iniKeepsWhatItDoesNotChange();
+    void benchmarkProgressIsFollowed();
+    void benchmarkRunsAndStops();
 
 private:
     static SyncRecord record(const QString &kind, const QString &id, qint64 modified,
@@ -508,6 +521,249 @@ void AdminTest::missingServiceIsReported()
 #else
     QSKIP("systemd is asked only on a machine with the unit");
 #endif
+}
+
+/*!
+ * The charts of "Нагрузка": a bucket for every step of the period, the ones
+ * the server did not run in as gaps, rates per minute of running, and the
+ * year in days that start at local midnight.
+ */
+void AdminTest::loadHistoryHasGapsAndRates()
+{
+    {
+        MetricsStore store;
+        QVERIFY(store.open(MetricsStore::pathIn(m_dir->path()), true));
+        const qint64 now = QDateTime::currentSecsSinceEpoch();
+        const qint64 minute = now / 60 * 60;
+        MetricsRow row;
+        row.t = minute - 120;
+        row.requests = 30;
+        row.overloaded = 3;
+        row.waitCount = 30;
+        row.waitSumMs = 15;
+        row.workCount = 30;
+        row.workSumMs = 90;
+        row.queueAvg = 1.5;
+        row.queueMax = 6;
+        row.cpuProcess = 12;
+        row.cpuSystem = -1;
+        row.memoryProcess = 64 * 1024 * 1024;
+        row.threads = 4;
+        QVERIFY(store.writeRow(row));
+        QVERIFY(store.rollUpHour(row.t));
+        // A day long ago: only its hour is left, as after a week of pruning.
+        MetricsRow old = row;
+        old.span = 3600;
+        old.t = (now - 100 * 86400) / 3600 * 3600;
+        old.minutes = 30;
+        old.requests = 600;
+        QVERIFY(store.writeRow(old));
+    }
+
+    LoadHistory history;
+    QVERIFY(!history.isOpen());
+    QString error;
+    QVERIFY2(history.open(m_dir->path(), &error), qPrintable(error));
+    const QDateTime at = QDateTime::currentDateTime();
+
+    const QList<LoadPoint> hour = history.points(LoadPeriod::Hour, at);
+    QCOMPARE(hour.size(), 60);
+    QVERIFY(hour.last().start <= at && hour.last().start.secsTo(at) < 60);
+    int present = 0;
+    for (const LoadPoint &point : hour) {
+        if (!point.present) {
+            QVERIFY(std::isnan(point.requestsPerMinute));
+            QVERIFY(std::isnan(point.cpuProcess));
+            continue;
+        }
+        ++present;
+        QCOMPARE(point.requests, qint64(30));
+        QCOMPARE(point.requestsPerMinute, 30.0);
+        QCOMPARE(point.overloaded, qint64(3));
+        QCOMPARE(point.waitAvgMs, 0.5);
+        QCOMPARE(point.workAvgMs, 3.0);
+        QCOMPARE(point.queueMax, 6.0);
+        QCOMPARE(point.cpuProcess, 12.0);
+        QVERIFY(std::isnan(point.cpuSystem));   // unknown is a gap, not zero
+        QCOMPARE(point.memoryMb, 64.0);
+    }
+    QCOMPARE(present, 1);
+
+    QCOMPARE(history.points(LoadPeriod::Day, at).size(), 144);
+    QCOMPARE(history.points(LoadPeriod::Week, at).size(), 168);
+    QCOMPARE(history.points(LoadPeriod::Month, at).size(), 180);
+    const QList<LoadPoint> year = history.points(LoadPeriod::Year, at);
+    QCOMPARE(year.size(), 365);
+    for (const LoadPoint &day : year)
+        QCOMPARE(day.start.time(), QTime(0, 0));
+    qint64 requests = 0;
+    for (const LoadPoint &day : year)
+        requests += day.requests;
+    QCOMPARE(requests, qint64(630));
+    // An hour of 30 minutes with 600 requests: 20 a minute while it ran.
+    bool found = false;
+    for (const LoadPoint &day : year) {
+        if (day.requests == 600) {
+            QCOMPARE(day.minutes, 30);
+            QCOMPARE(day.requestsPerMinute, 20.0);
+            found = true;
+        }
+    }
+    QVERIFY(found);
+    QVERIFY(history.firstRecorded().isValid());
+
+    // No file: the panel says so instead of creating one.
+    QTemporaryDir empty;
+    LoadHistory none;
+    QVERIFY(!none.open(empty.path(), &error));
+    QVERIFY(!error.isEmpty());
+    QVERIFY(!QFile::exists(MetricsStore::pathIn(empty.path())));
+}
+
+/*! The live values: fresh while the server writes them, stale after. */
+void AdminTest::loadOfNowGoesStale()
+{
+    const qint64 now = QDateTime::currentSecsSinceEpoch();
+    {
+        MetricsStore store;
+        QVERIFY(store.open(MetricsStore::pathIn(m_dir->path()), true));
+        QJsonObject live;
+        live.insert(QStringLiteral("at"), double(now));
+        live.insert(QStringLiteral("startedAt"), double(now - 3600));
+        live.insert(QStringLiteral("threads"), 4);
+        live.insert(QStringLiteral("queued"), 2);
+        live.insert(QStringLiteral("mode"), QStringLiteral("fair"));
+        live.insert(QStringLiteral("requestsPerMinute"), 120.0);
+        live.insert(QStringLiteral("memoryProcess"), 50.0 * 1024 * 1024);
+        live.insert(QStringLiteral("doneByThread"), QJsonArray { 10, 12, 11, 9 });
+        live.insert(QStringLiteral("busyMsByThread"), QJsonArray { 1.0, 2.0, 1.5, 0.5 });
+        QVERIFY(store.writeLive(live));
+    }
+    LoadHistory history;
+    QVERIFY(history.open(m_dir->path()));
+    const QDateTime at = QDateTime::fromSecsSinceEpoch(now);
+    LoadNow load = history.now(at);
+    QVERIFY(load.known);
+    QVERIFY(load.running);
+    QCOMPARE(load.threads, 4);
+    QCOMPARE(load.queued, 2);
+    QCOMPARE(load.requestsPerMinute, 120.0);
+    QCOMPARE(load.doneByThread, QList<qint64>({ 10, 12, 11, 9 }));
+    QCOMPARE(load.startedAt, at.addSecs(-3600));
+    // Half a minute without a word from the server: it is not running.
+    load = history.now(at.addSecs(LoadHistory::freshSeconds() + 10));
+    QVERIFY(load.known);
+    QVERIFY(!load.running);
+}
+
+/*!
+ * The settings of the page "Многопоточность" go into server.ini without
+ * touching anything else in it: its comments, the other keys and groups,
+ * its line endings.
+ */
+void AdminTest::iniKeepsWhatItDoesNotChange()
+{
+    const QString path = m_dir->filePath(QStringLiteral("service.ini"));
+    {
+        QFile file(path);
+        QVERIFY(file.open(QIODevice::WriteOnly));
+        file.write("; Settings of the service.\r\n[server]\r\n; Address to listen on.\r\nhost=\r\n"
+                   "port=8765\r\nthreads=0\r\n\r\n[other]\r\nthreads=3\r\n");
+    }
+    QString error;
+    QVERIFY2(IniFile::write(path, QStringLiteral("server"),
+                            { { QStringLiteral("threads"), QStringLiteral("8") },
+                              { QStringLiteral("group_commit"), QStringLiteral("64") } },
+                            &error),
+             qPrintable(error));
+    QFile file(path);
+    QVERIFY(file.open(QIODevice::ReadOnly));
+    const QByteArray text = file.readAll();
+    QCOMPARE(text, QByteArray("; Settings of the service.\r\n[server]\r\n; Address to listen on.\r\nhost=\r\n"
+                              "port=8765\r\nthreads=8\r\ngroup_commit=64\r\n\r\n[other]\r\nthreads=3\r\n"));
+    const QHash<QString, QString> server = IniFile::read(path, QStringLiteral("server"));
+    QCOMPARE(server.value(QStringLiteral("threads")), QStringLiteral("8"));
+    QCOMPARE(server.value(QStringLiteral("port")), QStringLiteral("8765"));
+    QCOMPARE(IniFile::read(path, QStringLiteral("other")).value(QStringLiteral("threads")), QStringLiteral("3"));
+    // The server reads what the panel wrote.
+    ServerConfig config;
+    QVERIFY2(config.loadIni(path, &error), qPrintable(error));
+    QCOMPARE(config.threads, 8);
+    QCOMPARE(config.groupCommit, 64);
+
+    // No file: it is made, with the group.
+    const QString fresh = m_dir->filePath(QStringLiteral("fresh/server.ini"));
+    QVERIFY(IniFile::write(fresh, QStringLiteral("server"), { { QStringLiteral("sync_mode"), QStringLiteral("normal") } }));
+    QCOMPARE(IniFile::read(fresh, QStringLiteral("server")).value(QStringLiteral("sync_mode")),
+             QStringLiteral("normal"));
+}
+
+/*! The lines of the benchmark become what the page shows. */
+void AdminTest::benchmarkProgressIsFollowed()
+{
+    BenchmarkRunner runner;
+    QVERIFY(!runner.handleLine("not json"));
+    QVERIFY(!runner.handleLine("{\"no\":\"event\"}"));
+    QVERIFY(runner.handleLine(
+        R"({"event":"plan","stages":[{"id":"probe","title":"Проверка машины"},{"id":"threads","title":"Число потоков"}],"runs":4,"estimatedSeconds":95,"elapsed":0.1})"));
+    QCOMPARE(runner.stages().size(), 2);
+    QCOMPARE(runner.runsPlanned(), 4);
+    QCOMPARE(runner.estimatedSeconds(), 95);
+    QVERIFY(runner.handleLine(R"({"event":"stage","index":1,"id":"threads","title":"Число потоков","elapsed":3})"));
+    QCOMPARE(runner.stageIndex(), 1);
+    QVERIFY(runner.handleLine(R"({"event":"progress","percent":37.5,"message":"Прогон 2 из 4","elapsed":40})"));
+    QCOMPARE(runner.percent(), 37.5);
+    QCOMPARE(runner.message(), QStringLiteral("Прогон 2 из 4"));
+    QCOMPARE(runner.elapsed(), 40.0);
+    QVERIFY(runner.handleLine(R"({"event":"heartbeat","percent":37.5,"message":"Прогон 2 из 4","elapsed":45,"idle":5})"));
+    QCOMPARE(runner.idle(), 5.0);
+    QVERIFY(runner.silence() < 2);
+    QVERIFY(runner.handleLine(
+        R"({"event":"run","stage":"threads","label":"потоков 8","scenario":"mixed","settings":{"threads":8},"result":{"started":true,"alive":true,"requests":900,"throughput":450,"p50":12,"p95":40}})"));
+    QCOMPARE(runner.runs().size(), 1);
+    QCOMPARE(runner.runs().first().settings.threads, 8);
+    QVERIFY(runner.runs().first().result.usable());
+    QVERIFY(runner.handleLine(
+        R"({"event":"recommendation","settings":{"threads":8,"group_commit":64},"notes":["Диск медленный"],"gainPercent":35})"));
+    QCOMPARE(runner.recommendation().value(QStringLiteral("settings")).toObject().value(QStringLiteral("threads")).toInt(), 8);
+    QVERIFY(runner.handleLine(R"({"event":"done","result":"C:/x/result.json"})"));
+    QCOMPARE(runner.resultPath(), QStringLiteral("C:/x/result.json"));
+    QCOMPARE(runner.percent(), 100.0);
+    QVERIFY(runner.log().join(QLatin1Char('\n')).contains(QStringLiteral("Диск медленный")));
+}
+
+/*!
+ * The real benchmark next to the panel: it runs to the end, and it stops at
+ * once when asked - in the middle of making its base.
+ */
+void AdminTest::benchmarkRunsAndStops()
+{
+    if (!QFile::exists(BenchmarkRunner::programPath()))
+        QSKIP("CalendarServerBench is not built next to the tests");
+    BenchmarkRunner runner;
+    QSignalSpy finished(&runner, &BenchmarkRunner::finished);
+    QString error;
+    QVERIFY2(runner.start({ QStringLiteral("probe"), QStringLiteral("--json"), QStringLiteral("--work"),
+                            m_dir->filePath(QStringLiteral("probe")) },
+                          &error),
+             qPrintable(error));
+    QVERIFY(runner.isRunning());
+    QVERIFY(finished.wait(60000));
+    QCOMPARE(runner.outcome(), BenchmarkRunner::Outcome::Done);
+    QVERIFY(runner.haveSystem());
+    QVERIFY(runner.system().cores >= 1);
+
+    finished.clear();
+    QVERIFY(runner.start({ QStringLiteral("prepare"), QStringLiteral("--json"), QStringLiteral("--dir"),
+                           m_dir->filePath(QStringLiteral("base")), QStringLiteral("--accounts"),
+                           QStringLiteral("400"), QStringLiteral("--records"), QStringLiteral("500") }));
+    QTRY_VERIFY_WITH_TIMEOUT(runner.percent() > 0, 30000);
+    QElapsedTimer timer;
+    timer.start();
+    runner.stop();
+    QVERIFY(finished.wait(15000));
+    QCOMPARE(runner.outcome(), BenchmarkRunner::Outcome::Cancelled);
+    QVERIFY(timer.elapsed() < 10000);
 }
 
 QTEST_GUILESS_MAIN(AdminTest)

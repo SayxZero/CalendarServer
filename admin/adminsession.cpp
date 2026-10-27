@@ -169,6 +169,14 @@ bool AdminSession::reopenDatabase(QString *error)
     return ok;
 }
 
+void AdminSession::setBenchmarkRunning(bool running)
+{
+    if (m_benchmarkRunning == running)
+        return;
+    m_benchmarkRunning = running;
+    emit statusChanged();
+}
+
 void AdminSession::refreshStatus()
 {
     const ServiceControl::Status status = m_service.status();

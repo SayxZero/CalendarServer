@@ -146,7 +146,7 @@ public:
      * An account goes away: the members of its calendars lose their copies
      * (tombstones, so that their devices drop them too), and its shares, their
      * links and its own memberships go. The records of the account itself are
-     * the caller's to delete. Runs outside a transaction of the caller's.
+     * the caller's to delete, best in the same transaction (Storage::deleteUser()).
      */
     bool forgetUser(qint64 userId);
 

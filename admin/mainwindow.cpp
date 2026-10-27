@@ -2,10 +2,12 @@
 
 #include "adminsession.h"
 #include "backuppage.h"
+#include "loadpage.h"
 #include "logpage.h"
 #include "look.h"
 #include "serverpage.h"
 #include "statspage.h"
+#include "threadspage.h"
 #include "userspage.h"
 
 #include <QApplication>
@@ -72,8 +74,10 @@ MainWindow::MainWindow(AdminSession *session, QWidget *parent)
     m_stack = new QStackedWidget;
     m_users = new UsersPage(session);
     m_stats = new StatsPage(session);
-    m_pages = { new ServerPage(session), m_users, m_stats, new BackupPage(session),
-                new LogPage(session) };
+    m_load = new LoadPage(session);
+    m_threads = new ThreadsPage(session);
+    m_pages = { new ServerPage(session), m_users, m_stats, m_load, m_threads,
+                new BackupPage(session), new LogPage(session) };
     for (Page *page : m_pages) {
         m_stack->addWidget(page);
         m_nav->addItem(page->title());
@@ -158,7 +162,8 @@ void MainWindow::grabPages(const QString &folder)
             content->grab().save(QDir(folder).absoluteFilePath(name + QStringLiteral("-whole.png")));
     };
     const QStringList names = { QStringLiteral("server"), QStringLiteral("users"),
-                                QStringLiteral("stats"), QStringLiteral("backups"),
+                                QStringLiteral("stats"), QStringLiteral("load"),
+                                QStringLiteral("threads"), QStringLiteral("backups"),
                                 QStringLiteral("log") };
     for (int i = 0; i < m_pages.size(); ++i) {
         m_nav->setCurrentRow(i);
@@ -176,6 +181,14 @@ void MainWindow::grabPages(const QString &folder)
             m_stats->showTables(true);
             save(QStringLiteral("%1-stats-tables").arg(i + 1));
             m_stats->showTables(false);
+            continue;
+        }
+        if (m_pages.at(i) == m_load) {
+            m_load->showTable(false);
+            save(QStringLiteral("%1-load").arg(i + 1));
+            m_load->showTable(true);
+            save(QStringLiteral("%1-load-table").arg(i + 1));
+            m_load->showTable(false);
             continue;
         }
         save(QStringLiteral("%1-%2").arg(i + 1).arg(names.value(i)));

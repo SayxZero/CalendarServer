@@ -5,10 +5,10 @@ CONFIG += c++17
 CONFIG -= app_bundle
 
 TARGET = CalendarServerAdmin
-VERSION = 1.2.0
+VERSION = 1.3.0
 DEFINES += QT_DISABLE_DEPRECATED_BEFORE=0x060000 SERVER_VERSION=\\\"$$VERSION\\\"
 
-INCLUDEPATH += ../src .
+INCLUDEPATH += ../src ../bench .
 
 SOURCES += \
     main.cpp \
@@ -16,7 +16,11 @@ SOURCES += \
     adminsession.cpp \
     backuppage.cpp \
     backups.cpp \
+    benchmarkrunner.cpp \
     chart.cpp \
+    inifile.cpp \
+    loadhistory.cpp \
+    loadpage.cpp \
     logpage.cpp \
     look.cpp \
     mainwindow.cpp \
@@ -25,6 +29,7 @@ SOURCES += \
     serverpage.cpp \
     servicecontrol.cpp \
     statspage.cpp \
+    threadspage.cpp \
     userspage.cpp \
     ../src/httpserver.cpp \
     ../src/storage.cpp \
@@ -32,14 +37,26 @@ SOURCES += \
     ../src/shares.cpp \
     ../src/config.cpp \
     ../src/runtimefile.cpp \
-    ../src/service.cpp
+    ../src/service.cpp \
+    ../src/workerpool.cpp \
+    ../src/metrics.cpp \
+    ../src/server.cpp \
+    ../bench/basemaker.cpp \
+    ../bench/loadrun.cpp \
+    ../bench/probe.cpp \
+    ../bench/reporter.cpp \
+    ../bench/tuner.cpp
 
 HEADERS += \
     admindb.h \
     adminsession.h \
     backuppage.h \
     backups.h \
+    benchmarkrunner.h \
     chart.h \
+    inifile.h \
+    loadhistory.h \
+    loadpage.h \
     logpage.h \
     look.h \
     mainwindow.h \
@@ -48,6 +65,7 @@ HEADERS += \
     serverpage.h \
     servicecontrol.h \
     statspage.h \
+    threadspage.h \
     userspage.h \
     ../src/httpserver.h \
     ../src/storage.h \
@@ -55,13 +73,21 @@ HEADERS += \
     ../src/shares.h \
     ../src/config.h \
     ../src/runtimefile.h \
-    ../src/service.h
+    ../src/service.h \
+    ../src/workerpool.h \
+    ../src/metrics.h \
+    ../src/server.h \
+    ../bench/basemaker.h \
+    ../bench/loadrun.h \
+    ../bench/probe.h \
+    ../bench/reporter.h \
+    ../bench/tuner.h
 
 win32 {
     # The icon and the name Explorer shows; the service control manager and
     # the UAC question.
     RC_FILE = admin.rc
-    LIBS += -ladvapi32 -lshell32
+    LIBS += -ladvapi32 -lshell32 -lpsapi
 }
 
 unix {

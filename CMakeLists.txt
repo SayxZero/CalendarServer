@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.16)
 
 project(CalendarServer
-    VERSION 1.2.0
+    VERSION 1.3.0
     DESCRIPTION "Sync server of the calendar planner"
     LANGUAGES CXX)
 
@@ -27,7 +27,13 @@ set(SERVER_CORE_SOURCES
     src/runtimefile.cpp
     src/runtimefile.h
     src/service.cpp
-    src/service.h)
+    src/service.h
+    src/workerpool.cpp
+    src/workerpool.h
+    src/metrics.cpp
+    src/metrics.h
+    src/server.cpp
+    src/server.h)
 
 # Compiled once for the server, its tests and the admin panel, which reads the
 # same base with the same code.
@@ -38,8 +44,8 @@ target_compile_definitions(server_core PUBLIC
     QT_DISABLE_DEPRECATED_BEFORE=0x060000
     SERVER_VERSION="${PROJECT_VERSION}")
 if(WIN32)
-    # The service control manager.
-    target_link_libraries(server_core PUBLIC advapi32)
+    # The service control manager; the memory of the process for the metrics.
+    target_link_libraries(server_core PUBLIC advapi32 psapi)
 endif()
 
 add_executable(CalendarServer src/main.cpp)
@@ -47,6 +53,29 @@ target_link_libraries(CalendarServer PRIVATE server_core)
 
 include(GNUInstallDirs)
 install(TARGETS CalendarServer RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+
+# The benchmark: it measures the machine and picks the load settings for it,
+# running the real server on a base of made-up accounts. Installed with the
+# server; the admin panel starts it from its page "Многопоточность".
+set(BENCH_SOURCES
+    bench/basemaker.cpp
+    bench/basemaker.h
+    bench/loadrun.cpp
+    bench/loadrun.h
+    bench/probe.cpp
+    bench/probe.h
+    bench/reporter.cpp
+    bench/reporter.h
+    bench/tuner.cpp
+    bench/tuner.h)
+
+add_library(bench_core STATIC ${BENCH_SOURCES})
+target_include_directories(bench_core PUBLIC bench)
+target_link_libraries(bench_core PUBLIC server_core)
+
+add_executable(CalendarServerBench bench/main.cpp)
+target_link_libraries(CalendarServerBench PRIVATE bench_core)
+install(TARGETS CalendarServerBench RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
 
 # What the admin panel knows without a window: its queries over the base, the
 # backups, the service and the records of the planner. The tests use it too.
@@ -57,6 +86,12 @@ set(ADMIN_DATA_SOURCES
     admin/adminsession.h
     admin/backups.cpp
     admin/backups.h
+    admin/benchmarkrunner.cpp
+    admin/benchmarkrunner.h
+    admin/inifile.cpp
+    admin/inifile.h
+    admin/loadhistory.cpp
+    admin/loadhistory.h
     admin/records.cpp
     admin/records.h
     admin/servicecontrol.cpp
@@ -64,7 +99,7 @@ set(ADMIN_DATA_SOURCES
 
 add_library(admin_data STATIC ${ADMIN_DATA_SOURCES})
 target_include_directories(admin_data PUBLIC admin)
-target_link_libraries(admin_data PUBLIC server_core)
+target_link_libraries(admin_data PUBLIC server_core bench_core)
 if(WIN32)
     target_link_libraries(admin_data PUBLIC shell32)
 endif()
@@ -86,6 +121,8 @@ if(SERVER_BUILD_ADMIN AND Qt6Widgets_FOUND)
         admin/backuppage.h
         admin/chart.cpp
         admin/chart.h
+        admin/loadpage.cpp
+        admin/loadpage.h
         admin/logpage.cpp
         admin/logpage.h
         admin/look.cpp
@@ -98,6 +135,8 @@ if(SERVER_BUILD_ADMIN AND Qt6Widgets_FOUND)
         admin/serverpage.h
         admin/statspage.cpp
         admin/statspage.h
+        admin/threadspage.cpp
+        admin/threadspage.h
         admin/userspage.cpp
         admin/userspage.h)
     target_link_libraries(CalendarServerAdmin PRIVATE admin_data Qt6::Widgets)
@@ -124,4 +163,8 @@ if(SERVER_BUILD_TESTS)
     add_executable(tst_admin tests/tst_admin.cpp)
     target_link_libraries(tst_admin PRIVATE admin_data Qt6::Test)
     add_test(NAME admin COMMAND tst_admin)
+
+    add_executable(tst_bench tests/tst_bench.cpp)
+    target_link_libraries(tst_bench PRIVATE bench_core Qt6::Test)
+    add_test(NAME bench COMMAND tst_bench)
 endif()

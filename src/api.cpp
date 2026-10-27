@@ -86,9 +86,10 @@ bool validKind(const QString &kind)
 
 } // namespace
 
-Api::Api(Storage *storage, const ServerConfig &config)
+Api::Api(Storage *storage, const ServerConfig &config, std::shared_ptr<LoginThrottle> throttle)
     : m_storage(storage)
     , m_config(config)
+    , m_throttle(throttle ? std::move(throttle) : std::make_shared<LoginThrottle>())
 {
 }
 
@@ -254,11 +255,11 @@ qint64 Api::authenticate(const HttpRequest &request, QByteArray *tokenHashOut)
     return m_storage->userForToken(hash, m_config.tokenLifetimeDays);
 }
 
-QString Api::issueToken(qint64 userId, const QString &device)
+QString Api::issueToken(Storage &storage, qint64 userId, const QString &device)
 {
     const QString token = QString::fromLatin1(
         randomBytes(32).toBase64(QByteArray::Base64UrlEncoding | QByteArray::OmitTrailingEquals));
-    if (!m_storage->addToken(tokenHash(token), userId, device))
+    if (!storage.addToken(tokenHash(token), userId, device))
         return QString();
     return token;
 }
@@ -287,15 +288,16 @@ QString Api::peerKey(const QHostAddress &peer)
 bool Api::isThrottled(const QString &key, int limit)
 {
     const qint64 now = QDateTime::currentMSecsSinceEpoch();
-    auto it = m_failures.find(key);
-    if (it == m_failures.end())
+    QMutexLocker locker(&m_throttle->lock);
+    auto it = m_throttle->failures.find(key);
+    if (it == m_throttle->failures.end())
         return false;
     QList<qint64> &times = it.value();
     times.erase(std::remove_if(times.begin(), times.end(),
                                [now](qint64 at) { return now - at > kFailureWindowMs; }),
                 times.end());
     if (times.isEmpty()) {
-        m_failures.erase(it);
+        m_throttle->failures.erase(it);
         return false;
     }
     return times.size() >= limit;
@@ -303,22 +305,24 @@ bool Api::isThrottled(const QString &key, int limit)
 
 void Api::noteFailure(const QString &key)
 {
-    m_failures[key].append(QDateTime::currentMSecsSinceEpoch());
+    QMutexLocker locker(&m_throttle->lock);
+    m_throttle->failures[key].append(QDateTime::currentMSecsSinceEpoch());
     // Keys of addresses and logins nobody tries again would stay for ever.
-    if (++m_failuresNoted % 256 == 0)
+    if (++m_throttle->noted % 256 == 0)
         forgetOldFailures();
 }
 
 void Api::forgetOldFailures()
 {
     const qint64 now = QDateTime::currentMSecsSinceEpoch();
-    for (auto it = m_failures.begin(); it != m_failures.end();) {
+    QHash<QString, QList<qint64>> &failures = m_throttle->failures;
+    for (auto it = failures.begin(); it != failures.end();) {
         QList<qint64> &times = it.value();
         times.erase(std::remove_if(times.begin(), times.end(),
                                    [now](qint64 at) { return now - at > kFailureWindowMs; }),
                     times.end());
         if (times.isEmpty())
-            it = m_failures.erase(it);
+            it = failures.erase(it);
         else
             ++it;
     }
@@ -367,14 +371,30 @@ HttpResponse Api::registerUser(const HttpRequest &request)
                      QStringLiteral("Логин «%1» уже занят").arg(login));
     }
 
-    const UserInfo user = m_storage->createUser(
-        login, displayName, hashPassword(password, m_config.passwordIterations));
-    if (!user.isValid()) {
+    // The hash is the slow part and needs no base: it is made before the
+    // write, on this thread, while other threads write.
+    const QString hash = hashPassword(password, m_config.passwordIterations);
+    const QString device = body.value(QStringLiteral("device")).toString();
+    QString token;
+    UserInfo user;
+    // The account and its first session together. The work may run on the
+    // commit thread: it touches only the storage it is given.
+    const bool created = m_storage->transact([&](Storage &storage) {
+        user = storage.createUser(login, displayName, hash);
+        if (user.isValid())
+            token = issueToken(storage, user.id, device);
+        return user.isValid() && !token.isEmpty();
+    });
+    if (!created) {
+        // Another thread registered the same login a moment earlier.
+        if (m_storage->userByLogin(login).isValid()) {
+            return error(409, QStringLiteral("login_taken"),
+                         QStringLiteral("Логин «%1» уже занят").arg(login));
+        }
         return error(500, QStringLiteral("storage"),
                      QStringLiteral("Не удалось создать аккаунт"));
     }
 
-    const QString token = issueToken(user.id, body.value(QStringLiteral("device")).toString());
     QJsonObject object;
     object.insert(QStringLiteral("token"), token);
     object.insert(QStringLiteral("user"), userJson(user.id));
@@ -406,7 +426,8 @@ HttpResponse Api::login(const HttpRequest &request)
                      QStringLiteral("Неверный логин или пароль"));
     }
 
-    const QString token = issueToken(user.id, body.value(QStringLiteral("device")).toString());
+    const QString token =
+        issueToken(*m_storage, user.id, body.value(QStringLiteral("device")).toString());
     if (token.isEmpty())
         return error(500, QStringLiteral("storage"), QStringLiteral("Не удалось начать сеанс"));
 
@@ -476,10 +497,15 @@ HttpResponse Api::changePassword(const HttpRequest &request, qint64 userId)
     if (!problem.isEmpty())
         return error(400, QStringLiteral("invalid"), problem);
 
-    m_storage->setPasswordHash(userId, hashPassword(newPassword, m_config.passwordIterations));
+    const QString stored = hashPassword(newPassword, m_config.passwordIterations);
     QByteArray hash;
     authenticate(request, &hash);
-    m_storage->removeOtherTokens(userId, hash);
+    // The new password and the end of the other sessions go together.
+    const bool changed = m_storage->transact([&](Storage &storage) {
+        return storage.setPasswordHash(userId, stored) && storage.removeOtherTokens(userId, hash);
+    });
+    if (!changed)
+        return error(500, QStringLiteral("storage"), QStringLiteral("Не удалось сменить пароль"));
     return ok(QJsonObject());
 }
 
@@ -584,8 +610,7 @@ HttpResponse Api::sync(const HttpRequest &request, qint64 userId)
     traffic.changesOut = int(outgoing.size());
     traffic.bytesIn = request.body.size();
     traffic.bytesOut = response.body.size();
-    if (!m_storage->noteSync(userId, traffic))
-        qWarning().noquote() << "Не удалось учесть обмен в статистике:" << m_storage->lastError();
+    m_storage->noteSync(userId, traffic);
     return response;
 }
 
@@ -679,10 +704,15 @@ HttpResponse Api::shareConfigure(const HttpRequest &request, qint64 userId)
     const ShareMode mode = shareModeFromKey(body.value(QStringLiteral("mode")).toString());
 
     QString problem;
-    const ShareInfo share =
-        m_storage->shares().configure(userId, calendarId, enabled, mode, &problem);
-    if (!share.isValid())
-        return error(400, QStringLiteral("share"), problem);
+    ShareInfo share;
+    const bool configured = m_storage->transact([&](Storage &storage) {
+        share = storage.shares().configure(userId, calendarId, enabled, mode, &problem);
+        return share.isValid();
+    });
+    if (!configured) {
+        return error(400, QStringLiteral("share"),
+                     problem.isEmpty() ? m_storage->lastError() : problem);
+    }
 
     QJsonObject object;
     object.insert(QStringLiteral("share"), shareJson(share));
@@ -703,37 +733,60 @@ HttpResponse Api::shareMember(const HttpRequest &request, qint64 userId)
                      QStringLiteral("Нужны календарь и логин участника"));
     }
 
-    const ShareInfo share = m_storage->shares().shareOf(userId, calendarId);
-    if (!share.isValid()) {
+    // What the work found out, for the answer: the share is looked up inside
+    // the transaction, so that it cannot change between the look and the write.
+    enum class Outcome { Done, NoShare, NoMember, Refused, Failed };
+    Outcome outcome = Outcome::Failed;
+    QString problem;
+    const bool remove = body.value(QStringLiteral("remove")).toBool(false);
+    const ShareAccess access = shareAccessFromKey(body.value(QStringLiteral("access")).toString());
+    m_storage->transact([&](Storage &storage) {
+        const ShareInfo share = storage.shares().shareOf(userId, calendarId);
+        if (!share.isValid()) {
+            outcome = Outcome::NoShare;
+            return false;
+        }
+        ShareMemberInfo target;
+        for (const ShareMemberInfo &member : share.members) {
+            if (member.login.compare(login, Qt::CaseInsensitive) == 0)
+                target = member;
+        }
+        if (target.userId == 0) {
+            outcome = Outcome::NoMember;
+            return false;
+        }
+        if (remove) {
+            // The owner shows a member the door: the copies go with the access,
+            // or the records would stay on a device that may no longer see them.
+            qint64 revision = 0;
+            if (!storage.shares().dropCopies(target.userId, target.twinId, &revision)
+                || !storage.shares().removeMember(share.id, target.userId, &problem)) {
+                if (problem.isEmpty())
+                    problem = storage.shares().lastError();
+                outcome = Outcome::Failed;
+                return false;
+            }
+        } else if (!storage.shares().setMemberAccess(userId, calendarId, login, access, &problem)) {
+            outcome = Outcome::Refused;
+            return false;
+        }
+        outcome = Outcome::Done;
+        return true;
+    });
+    switch (outcome) {
+    case Outcome::Done:
+        break;
+    case Outcome::NoShare:
         return error(404, QStringLiteral("not_found"),
                      QStringLiteral("Этот календарь никому не открыт"));
-    }
-
-    ShareMemberInfo target;
-    for (const ShareMemberInfo &member : share.members) {
-        if (member.login.compare(login, Qt::CaseInsensitive) == 0)
-            target = member;
-    }
-    if (target.userId == 0) {
+    case Outcome::NoMember:
         return error(404, QStringLiteral("not_found"),
                      QStringLiteral("Участник «%1» не найден").arg(login));
-    }
-
-    QString problem;
-    if (body.value(QStringLiteral("remove")).toBool(false)) {
-        // The owner shows a member the door: the copies go with the access, or
-        // the records would stay on a device that may no longer see them.
-        qint64 revision = 0;
-        if (!m_storage->shares().dropCopies(target.userId, target.twinId, &revision)
-            || !m_storage->shares().removeMember(share.id, target.userId, &problem)) {
-            return error(500, QStringLiteral("share"),
-                         problem.isEmpty() ? m_storage->shares().lastError() : problem);
-        }
-    } else {
-        const ShareAccess access =
-            shareAccessFromKey(body.value(QStringLiteral("access")).toString());
-        if (!m_storage->shares().setMemberAccess(userId, calendarId, login, access, &problem))
-            return error(400, QStringLiteral("share"), problem);
+    case Outcome::Refused:
+        return error(400, QStringLiteral("share"), problem);
+    case Outcome::Failed:
+        return error(500, QStringLiteral("share"),
+                     problem.isEmpty() ? m_storage->lastError() : problem);
     }
 
     QJsonObject object;
@@ -758,10 +811,15 @@ HttpResponse Api::shareLink(const HttpRequest &request, qint64 userId)
     }
 
     QString problem;
-    const QString token =
-        m_storage->shares().createLink(userId, calendarId, singleUse, life, &problem);
-    if (token.isEmpty())
-        return error(400, QStringLiteral("share"), problem);
+    QString token;
+    const bool created = m_storage->transact([&](Storage &storage) {
+        token = storage.shares().createLink(userId, calendarId, singleUse, life, &problem);
+        return !token.isEmpty();
+    });
+    if (!created) {
+        return error(400, QStringLiteral("share"),
+                     problem.isEmpty() ? m_storage->lastError() : problem);
+    }
 
     QJsonObject object;
     object.insert(QStringLiteral("token"), token);
@@ -813,12 +871,22 @@ HttpResponse Api::shareJoin(const HttpRequest &request, qint64 userId)
 
     QString problem;
     qint64 revision = 0;
-    const ShareInfo share = m_storage->shares().join(token, userId, twinId, &revision, &problem);
-    if (!share.isValid())
-        return error(400, QStringLiteral("link"), problem);
-
-    // A single use link is spent only once somebody really walked through it.
-    m_storage->shares().spendLink(token);
+    ShareInfo share;
+    // The copies, the membership and the spent link go in together - and a
+    // single use link cannot be walked through twice on two threads.
+    const bool joined = m_storage->transact([&](Storage &storage) {
+        share = storage.shares().join(token, userId, twinId, &revision, &problem);
+        if (!share.isValid())
+            return false;
+        // A single use link is spent only once somebody really walked through it.
+        storage.shares().spendLink(token);
+        return true;
+    });
+    if (!joined) {
+        if (!share.isValid() && !problem.isEmpty())
+            return error(400, QStringLiteral("link"), problem);
+        return error(500, QStringLiteral("link"), m_storage->lastError());
+    }
 
     ShareAccess access = ShareAccess::Read;
     for (const ShareMemberInfo &member : share.members) {
@@ -844,20 +912,31 @@ HttpResponse Api::shareLeave(const HttpRequest &request, qint64 userId)
         return failure;
 
     const QString twinId = body.value(QStringLiteral("twinId")).toString();
-    const ShareInfo share = m_storage->shares().shareOfTwin(userId, twinId);
-    if (!share.isValid()) {
+    // Giving the access up takes the copies with it and takes the member out of
+    // the owner's list, which is the same thing seen from the other side.
+    bool found = false;
+    qint64 revision = 0;
+    QString problem;
+    const bool left = m_storage->transact([&](Storage &storage) {
+        const ShareInfo share = storage.shares().shareOfTwin(userId, twinId);
+        found = share.isValid();
+        if (!found)
+            return false;
+        if (!storage.shares().dropCopies(userId, twinId, &revision)
+            || !storage.shares().removeMember(share.id, userId, &problem)) {
+            if (problem.isEmpty())
+                problem = storage.shares().lastError();
+            return false;
+        }
+        return true;
+    });
+    if (!found) {
         return error(404, QStringLiteral("not_found"),
                      QStringLiteral("Этот календарь вам никто не открывал"));
     }
-
-    // Giving the access up takes the copies with it and takes the member out of
-    // the owner's list, which is the same thing seen from the other side.
-    qint64 revision = 0;
-    QString problem;
-    if (!m_storage->shares().dropCopies(userId, twinId, &revision)
-        || !m_storage->shares().removeMember(share.id, userId, &problem)) {
+    if (!left) {
         return error(500, QStringLiteral("share"),
-                     problem.isEmpty() ? m_storage->shares().lastError() : problem);
+                     problem.isEmpty() ? m_storage->lastError() : problem);
     }
 
     QJsonObject object;

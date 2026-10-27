@@ -5,7 +5,7 @@ CONFIG += c++17 console
 CONFIG -= app_bundle
 
 TARGET = CalendarServer
-VERSION = 1.2.0
+VERSION = 1.3.0
 DEFINES += QT_DISABLE_DEPRECATED_BEFORE=0x060000 SERVER_VERSION=\\\"$$VERSION\\\"
 
 INCLUDEPATH += src
@@ -18,7 +18,10 @@ SOURCES += \
     src/shares.cpp \
     src/config.cpp \
     src/runtimefile.cpp \
-    src/service.cpp
+    src/service.cpp \
+    src/workerpool.cpp \
+    src/metrics.cpp \
+    src/server.cpp
 
 HEADERS += \
     src/httpserver.h \
@@ -27,10 +30,13 @@ HEADERS += \
     src/shares.h \
     src/config.h \
     src/runtimefile.h \
-    src/service.h
+    src/service.h \
+    src/workerpool.h \
+    src/metrics.h \
+    src/server.h
 
-# The service control manager.
-win32: LIBS += -ladvapi32
+# The service control manager; the memory of the process for the metrics.
+win32: LIBS += -ladvapi32 -lpsapi
 
 unix {
     target.path = /usr/local/bin
