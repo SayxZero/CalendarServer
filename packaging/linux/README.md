@@ -1,19 +1,34 @@
-# Пакеты Linux — заглушка
+# Linux: сборка в Docker
 
-Сборка пакетов сервера для Linux ещё не настроена. Её место — здесь; общий
-`build-packages.bat` зонтичного репозитория пока пропускает этот шаг и
-оставляет в `Build/Linux/` только записку.
+`Dockerfile` здесь собирает сервер на Ubuntu 26.04 LTS с Qt из её
+репозиториев (6.10) и делает из этого три вещи:
 
-Задумано (подробнее — `PACKAGING.md` зонтичного репозитория CosmosCalendar):
+- **архив** `CalendarServer-<v>-ubuntu26.04-x64.tar.gz`: `bin/` — сервер,
+  бенчмарк и админ-панель, `deploy/` — служба systemd и пример `server.ini`,
+  `INSTALL.txt` — что поставить и как запустить;
+- **отчёты тестов** `tests/tst_server.txt`, `tst_bench.txt`, `tst_admin.txt`.
+  Тесты идут внутри сборки образа, и архив выгружается только после них;
+- **образ сервера** `runtime`: Ubuntu 26.04 с библиотеками Qt, сервер не от
+  root (`calendar`), база в томе `/data`, порт 8765, проверка здоровья —
+  `GET /api/ping`.
 
-- сборка в Docker: образ на Debian 12 с `qt6-base-dev`, `libqt6sql6-sqlite`,
-  CMake и Ninja;
-- `.deb` через CPack DEB: `/usr/bin/calendar-server`, unit systemd (из
-  `deploy/calendar-server.service`, путь к программе — через `configure_file`),
-  пользователь через `sysusers.d`, папка данных `/var/lib/calendar-server`
-  через `tmpfiles.d`, пример `/etc/calendar-server/server.ini`; `remove` и
-  `purge` базу не трогают;
-- Docker-образ сервера (`debian:12-slim`, не root, `VOLUME /data`,
-  `EXPOSE 8765`, проверка по `GET /api/ping`) — для развёртывания где угодно.
+Контекст сборки — корень проекта; что в него попадает, перечисляет
+`Dockerfile.dockerignore` (только исходники: в `build*` лежат сборки Windows
+вместе с Qt).
 
-Результат — в `Build/Linux/` зонтичного репозитория, как у Windows и Android.
+```bash
+docker build -f packaging/linux/Dockerfile --target dist --output type=local,dest=out .
+docker build -f packaging/linux/Dockerfile --target runtime -t calendar-server .
+docker run -d -p 8765:8765 -v calendar-data:/data calendar-server
+```
+
+Ключи сервера дописываются после имени образа (`--no-registration`,
+`--trusted-proxies …`), папку данных и порт задаёт сам образ.
+
+На машине разработки (Windows) всё это запускает `build-linux.ps1`
+зонтичного репозитория CosmosCalendar — Docker Engine в WSL, результат в
+`Build/Linux`; там же, в `PACKAGING.md`, — установка Docker и что дальше:
+`.deb` с `sysusers.d` и `tmpfiles.d`, сборки для других дистрибутивов.
+
+`tst_admin` на Linux проходит без одного теста: проверка службы Windows
+пропускается (`QSKIP`), systemd с юнитом в контейнере нет.

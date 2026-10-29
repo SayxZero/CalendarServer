@@ -1,0 +1,26 @@
+CalendarServer для Linux — сервер синхронизации «Космос календаря»
+
+Собран в Docker на Ubuntu 26.04 LTS с Qt из её репозиториев, поэтому
+работает на Ubuntu 26.04 и дистрибутивах с тем же Qt (6.10) или новее.
+
+  bin/CalendarServer        сервер
+  bin/CalendarServerBench   бенчмарк: подбор настроек нагрузки
+  bin/CalendarServerAdmin   админ-панель (нужна графическая сессия)
+  deploy/                   служба systemd и пример server.ini
+
+Что нужно поставить (Ubuntu 26.04):
+
+  sudo apt install libqt6network6 libqt6sql6-sqlite   # сервер и бенчмарк
+  sudo apt install libqt6widgets6                     # ещё и панель
+
+Служба systemd:
+
+  sudo install -m 755 bin/CalendarServer /usr/local/bin/
+  sudo useradd --system --home /var/lib/calendar-server --create-home calendar
+  sudo cp deploy/calendar-server.service /etc/systemd/system/
+  sudo systemctl enable --now calendar-server
+  curl http://127.0.0.1:8765/api/ping
+
+Настройки — server.ini в папке данных (пример — deploy/server.ini.example),
+журнал — journalctl -u calendar-server. Подробно — README.md проекта:
+https://github.com/SayxZero/CalendarServer

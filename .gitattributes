@@ -2,3 +2,7 @@
 # falls apart and the next line runs as a command of its own.
 *.bat text eol=crlf
 *.cmd text eol=crlf
+
+# Read inside Linux containers, where a CR becomes part of the line.
+Dockerfile text eol=lf
+*.dockerignore text eol=lf

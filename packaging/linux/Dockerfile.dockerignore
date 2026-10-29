@@ -1,0 +1,11 @@
+# The context of packaging/linux/Dockerfile: only what the build reads. The
+# build folders beside the sources hold a whole Windows deployment, and data
+# folders may hold real bases.
+*
+!CMakeLists.txt
+!src
+!bench
+!admin
+!tests
+!deploy
+!packaging/linux

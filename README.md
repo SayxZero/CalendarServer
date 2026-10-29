@@ -41,7 +41,9 @@
 Нужны Qt 6.2 или новее с модулями Core, Network и Sql (драйвер SQLite входит в
 Qt; модуль Test — для тестов, Widgets — для админ-панели), CMake 3.16+ и
 компилятор C++17. Регулярно сервер собирается на Windows 10 с Qt 6.5.3 и
-MinGW 11.2; сборка на Linux описана по пакетам дистрибутивов.
+MinGW 11.2, а для Linux — в Docker на Ubuntu 26.04 с её Qt 6.10, со всеми
+тестами (ниже, «Linux: Docker»); сборка на Linux руками описана по пакетам
+дистрибутивов.
 
 Общий путь на любой системе:
 
@@ -146,9 +148,31 @@ windeployqt --no-translations build\CalendarServerAdmin.exe
 На Windows вывод QtTest в консоль иногда не виден — поэтому результат тестов
 пишется в файл (`-o result.txt,txt`).
 
+### Linux: Docker
+
+`packaging/linux/Dockerfile` собирает сервер, бенчмарк и админ-панель на
+Ubuntu 26.04 LTS, прогоняет тесты (`tst_admin` — с `QT_QPA_PLATFORM=offscreen`;
+проверка службы Windows в нём пропускается) и выдаёт архив программ и образ
+сервера. Контекст — корень проекта:
+
+```bash
+docker build -f packaging/linux/Dockerfile --target dist --output type=local,dest=out .
+docker build -f packaging/linux/Dockerfile --target runtime -t calendar-server .
+docker run -d -p 8765:8765 -v calendar-data:/data calendar-server
+```
+
+В `out/` — `CalendarServer-<v>-ubuntu26.04-x64.tar.gz` (`bin/`, `deploy/`,
+`INSTALL.txt` с пакетами, которые нужны программам) и отчёты тестов. Образ —
+сервер не от root, база в томе `/data`, проверка здоровья по `/api/ping`;
+ключи сервера пишутся после имени образа. Подробнее —
+[packaging/linux/README.md](packaging/linux/README.md); на Windows всё это
+вместе с бэкендом сайта собирает `build-linux.ps1` зонтичного репозитория
+(Docker Engine в WSL).
+
 ### Linux: Debian, Ubuntu
 
-Qt 6.2+ есть в Debian 12 и Ubuntu 22.04 и новее.
+Qt 6.2+ есть в Debian 12 и Ubuntu 22.04 и новее; на Ubuntu 26.04 (Qt 6.10)
+сервер собирается и проходит тесты регулярно — в Docker, выше.
 
 ```bash
 sudo apt install build-essential cmake ninja-build qt6-base-dev libqt6sql6-sqlite
@@ -580,7 +604,8 @@ tests/
 deploy/             пример server.ini и служба systemd
 packaging/windows/  установщики WiX: MSI, setup.exe, его русские строки,
                     service.ini (настройки службы), firewall-ru.wxl
-packaging/linux/    заглушка: пакеты Linux будут собираться в Docker
+packaging/linux/    сборка в Docker на Ubuntu 26.04: Dockerfile (тесты, архив,
+                    образ сервера), его .dockerignore, INSTALL.txt архива
 build-installer.bat установщики Windows
 build-server.bat    сборка и тесты на Windows
 run-server.bat      запуск на Windows
