@@ -3,10 +3,14 @@
 #include <QCommandLineOption>
 #include <QHostAddress>
 #include <QList>
+#include <QPair>
 #include <QString>
 #include <QStringList>
 
 class QCommandLineParser;
+
+/*! An address and its prefix length, as QHostAddress::isInSubnet() takes it; one address is a whole prefix. */
+using Subnet = QPair<QHostAddress, int>;
 
 /*!
  * The command line of the server, in one place: the server parses its own with
@@ -26,6 +30,7 @@ struct ServerOptions
     const QCommandLineOption dataDir;
     const QCommandLineOption logFile;
     const QCommandLineOption noRegistration;
+    const QCommandLineOption trustedProxies;
     const QCommandLineOption service;
     const QCommandLineOption listUsers;
     const QCommandLineOption deleteUser;
@@ -58,6 +63,15 @@ struct ServerConfig
 
     /*! Anyone who reaches the server may create an account. */
     bool allowRegistration = true;
+
+    /*!
+     * Reverse proxies in front of the server (the backend of the site, nginx),
+     * by address or subnet. A request that comes from one of them is the
+     * client's its X-Forwarded-For names - for the wrong passwords and in the
+     * log; from anywhere else the header means nothing. Empty: every request
+     * is the address its connection came from, as before.
+     */
+    QList<Subnet> trustedProxies;
 
     /*! Largest request body, the whole planner of one user in one sync. */
     int maxBodyMb = 64;
@@ -133,6 +147,17 @@ struct ServerConfig
      * is smaller. -1 when unknown.
      */
     static qint64 memoryLimit();
+
+    /*!
+     * "127.0.0.1, ::1, 10.0.0.0/8" - addresses and subnets separated by commas
+     * or spaces - into @p proxies. Returns false with @p error naming the
+     * entry that is neither; a bare address is that address alone, never the
+     * network Qt would guess from "10" or "192.168".
+     */
+    static bool parseTrustedProxies(const QString &text, QList<Subnet> *proxies, QString *error);
+
+    /*! trustedProxies as they would be written, for the log. */
+    QString trustedProxiesText() const;
 
     /*! Reads the [server] group of @p path; returns false with @p error when it fails. */
     bool loadIni(const QString &path, QString *error);

@@ -114,13 +114,14 @@ private:
      * from one address, and an address that tries many logins at once. Not the
      * address as a whole for the first wrong password of somebody: behind a
      * reverse proxy every device has the same address, and one person's typos
-     * would lock everybody out.
+     * would lock everybody out. The address is the request's client - behind
+     * a trusted proxy the one it forwarded the request for.
      */
     bool isThrottled(const QString &key, int limit);
     void noteFailure(const QString &key);
     void forgetOldFailures();   //!< with the lock of m_throttle held
-    static QString loginKey(const QHostAddress &peer, const QString &login);
-    static QString peerKey(const QHostAddress &peer);
+    static QString loginKey(const QHostAddress &client, const QString &login);
+    static QString peerKey(const QHostAddress &client);
 
     static HttpResponse error(int status, const QString &code, const QString &message);
     static HttpResponse ok(const QJsonObject &object, int status = 200);

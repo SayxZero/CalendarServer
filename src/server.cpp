@@ -85,6 +85,7 @@ bool Server::start(QString *error)
     // ---- HTTP ------------------------------------------------------------------
     m_http = std::make_unique<HttpServer>();
     m_http->setLimits(limits);
+    m_http->setTrustedProxies(m_config.trustedProxies);
     m_http->setPool(m_pool.get(), [this](int worker, const HttpRequest &request) {
         return m_workers[size_t(worker)].api->handle(request);
     });

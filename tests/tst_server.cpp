@@ -7,6 +7,7 @@
 #include "storage.h"
 #include "workerpool.h"
 
+#include <QCommandLineParser>
 #include <QElapsedTimer>
 #include <QEventLoop>
 #include <QJsonArray>
@@ -55,6 +56,8 @@ private slots:
     void logoutEndsSession();
     void passwordChangeLogsOutOthers();
     void throttlesGuessing();
+    void forwardedForIsIgnoredFromUntrustedPeers();
+    void trustedProxyCountsVisitorsApart();
     void pipelinedRequests();
     void malformedRequests();
     void headAndOldHttpAreAnsweredProperly();
@@ -104,7 +107,8 @@ private:
     };
 
     Reply call(const QByteArray &method, const QString &path, const QJsonObject &body = {},
-               const QString &token = QString());
+               const QString &token = QString(),
+               const QHash<QByteArray, QByteArray> &headers = {});
     QString registerUser(const QString &login, const QString &password = QStringLiteral("secret1"));
     static QJsonObject change(const QString &kind, const QString &id, qint64 modified,
                               const QJsonObject &data, bool deleted = false);
@@ -176,13 +180,16 @@ void ServerTest::cleanup()
 }
 
 ServerTest::Reply ServerTest::call(const QByteArray &method, const QString &path,
-                                   const QJsonObject &body, const QString &token)
+                                   const QJsonObject &body, const QString &token,
+                                   const QHash<QByteArray, QByteArray> &headers)
 {
     QNetworkRequest request(
         QUrl(QStringLiteral("http://127.0.0.1:%1%2").arg(m_server->port()).arg(path)));
     request.setHeader(QNetworkRequest::ContentTypeHeader, QStringLiteral("application/json"));
     if (!token.isEmpty())
         request.setRawHeader("Authorization", "Bearer " + token.toLatin1());
+    for (auto it = headers.cbegin(); it != headers.cend(); ++it)
+        request.setRawHeader(it.key(), it.value());
 
     const QByteArray payload = method == "GET" ? QByteArray()
                                                : QJsonDocument(body).toJson(QJsonDocument::Compact);
@@ -559,6 +566,114 @@ void ServerTest::throttlesGuessing()
         QCOMPARE(call("POST", QStringLiteral("/api/password"), change, token).status, 403);
     change.insert(QStringLiteral("oldPassword"), QStringLiteral("secret1"));
     QCOMPARE(call("POST", QStringLiteral("/api/password"), change, token).status, 429);
+}
+
+void ServerTest::forwardedForIsIgnoredFromUntrustedPeers()
+{
+    const auto attempt = [this](const QString &login, const QString &password,
+                                const QByteArray &forwardedFor) {
+        QJsonObject body;
+        body.insert(QStringLiteral("login"), login);
+        body.insert(QStringLiteral("password"), password);
+        return call("POST", QStringLiteral("/api/login"), body, QString(),
+                    { { "X-Forwarded-For", forwardedFor } })
+            .status;
+    };
+
+    // No proxy is trusted: a guesser cannot become a new visitor with every
+    // try by writing another address into the header.
+    registerUser(QStringLiteral("hanna"));
+    for (int i = 1; i <= 10; ++i) {
+        QCOMPARE(attempt(QStringLiteral("hanna"), QStringLiteral("guess00"),
+                         "203.0.113." + QByteArray::number(i)),
+                 401);
+    }
+    QCOMPARE(attempt(QStringLiteral("hanna"), QStringLiteral("secret1"), "203.0.113.99"), 429);
+
+    // A proxy is trusted, but not the address the requests come from.
+    m_config.trustedProxies = { QHostAddress::parseSubnet(QStringLiteral("10.0.0.0/8")) };
+    startServer();
+    registerUser(QStringLiteral("ilya"));
+    for (int i = 1; i <= 10; ++i) {
+        QCOMPARE(attempt(QStringLiteral("ilya"), QStringLiteral("guess00"),
+                         "203.0.113." + QByteArray::number(i)),
+                 401);
+    }
+    QCOMPARE(attempt(QStringLiteral("ilya"), QStringLiteral("secret1"), "203.0.113.99"), 429);
+}
+
+void ServerTest::trustedProxyCountsVisitorsApart()
+{
+    // The proxies as server.ini and the command line give them.
+    const QString ini = m_dir->filePath(QStringLiteral("proxies.ini"));
+    const auto writeIni = [&](const QByteArray &text) {
+        QFile file(ini);
+        QVERIFY(file.open(QIODevice::WriteOnly | QIODevice::Truncate));
+        file.write("[server]\n" + text);
+    };
+    writeIni("trusted_proxies=127.0.0.1, ::1, 10.0.0.0/8\n");
+    ServerConfig config;
+    QString error;
+    QVERIFY2(config.loadIni(ini, &error), qPrintable(error));
+    QCOMPARE(config.trustedProxies.size(), 3);
+    QCOMPARE(config.trustedProxiesText(), QStringLiteral("127.0.0.1, ::1, 10.0.0.0/8"));
+    writeIni("trusted_proxies=localhost\n");
+    ServerConfig wrong;
+    QVERIFY(!wrong.loadIni(ini, &error));
+    QVERIFY(error.contains(QStringLiteral("trusted_proxies")));
+
+    const ServerOptions options;
+    QCommandLineParser parser;
+    parser.addOptions(options.all());
+    QVERIFY(parser.parse({ QStringLiteral("CalendarServer"), QStringLiteral("--trusted-proxies"),
+                           QStringLiteral("127.0.0.1"), QStringLiteral("--trusted-proxies"),
+                           QStringLiteral("192.168.0.0/16,::1") }));
+    ServerConfig fromLine;
+    QVERIFY2(fromLine.apply(parser, options, &error), qPrintable(error));
+    QCOMPARE(fromLine.trustedProxiesText(), QStringLiteral("127.0.0.1, 192.168.0.0/16, ::1"));
+
+    m_config.trustedProxies = config.trustedProxies;
+    startServer();
+
+    const auto attempt = [this](const QString &login, const QString &password,
+                                const QByteArray &forwardedFor = QByteArray()) {
+        QJsonObject body;
+        body.insert(QStringLiteral("login"), login);
+        body.insert(QStringLiteral("password"), password);
+        QHash<QByteArray, QByteArray> headers;
+        if (!forwardedFor.isEmpty())
+            headers.insert("X-Forwarded-For", forwardedFor);
+        return call("POST", QStringLiteral("/api/login"), body, QString(), headers).status;
+    };
+    const QByteArray anna = "203.0.113.1";
+    const QByteArray boris = "203.0.113.2";
+
+    // Anna guesses Hanna's password until the login is closed - to her.
+    registerUser(QStringLiteral("hanna"));
+    for (int i = 0; i < 10; ++i)
+        QCOMPARE(attempt(QStringLiteral("hanna"), QStringLiteral("guess00"), anna), 401);
+    QCOMPARE(attempt(QStringLiteral("hanna"), QStringLiteral("secret1"), anna), 429);
+    // What she writes at the left end does not make her somebody else: the
+    // proxy added her address last. Nor does another trusted hop on the way.
+    QCOMPARE(attempt(QStringLiteral("hanna"), QStringLiteral("secret1"), "198.51.100.7, " + anna),
+             429);
+    QCOMPARE(attempt(QStringLiteral("hanna"), QStringLiteral("secret1"), anna + ", 10.0.0.5"),
+             429);
+
+    // Boris behind the same proxy signs in as before, and so does a request
+    // of the proxy itself.
+    QCOMPARE(attempt(QStringLiteral("hanna"), QStringLiteral("secret1"), boris), 200);
+    QCOMPARE(attempt(QStringLiteral("hanna"), QStringLiteral("secret1")), 200);
+
+    // Fifty wrong passwords over many logins close Anna's address as a whole,
+    // and only hers.
+    registerUser(QStringLiteral("ilya"));
+    for (int i = 0; i < 40; ++i) {
+        QCOMPARE(attempt(QStringLiteral("nobody%1").arg(i), QStringLiteral("guess00"), anna),
+                 401);
+    }
+    QCOMPARE(attempt(QStringLiteral("ilya"), QStringLiteral("secret1"), anna), 429);
+    QCOMPARE(attempt(QStringLiteral("ilya"), QStringLiteral("secret1"), boris), 200);
 }
 
 void ServerTest::pipelinedRequests()

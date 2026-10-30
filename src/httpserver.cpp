@@ -89,6 +89,35 @@ QString clientKey(const HttpRequest &request, quint64 connection)
     return QStringLiteral("connection %1").arg(connection);
 }
 
+/*! A dual stack socket reports IPv4 peers as "::ffff:a.b.c.d": back to a.b.c.d. */
+QHostAddress plainAddress(QHostAddress address)
+{
+    bool mapped = false;
+    const quint32 ipv4 = address.toIPv4Address(&mapped);
+    if (mapped)
+        address = QHostAddress(ipv4);
+    return address;
+}
+
+/*!
+ * One entry of X-Forwarded-For. Some proxies add the port, "1.2.3.4:5678"
+ * or "[::1]:5678"; a name, "unknown" or anything else is a null address.
+ */
+QHostAddress forwardedAddress(const QByteArray &entry)
+{
+    QByteArray text = entry.trimmed();
+    if (text.startsWith('[')) {
+        const int close = text.indexOf(']');
+        text = close > 0 ? text.mid(1, close - 1) : QByteArray();
+    } else if (text.count(':') == 1) {
+        text.truncate(text.indexOf(':'));
+    }
+    QHostAddress address;
+    if (text.isEmpty() || !address.setAddress(QString::fromLatin1(text)))
+        return QHostAddress();
+    return plainAddress(address);
+}
+
 } // namespace
 
 HttpResponse HttpResponse::json(int status, const QByteArray &body)
@@ -145,6 +174,36 @@ void HttpServer::setMaxBodySize(qint64 bytes)
     Limits limits = m_limits;
     limits.maxBody = bytes;
     setLimits(limits);
+}
+
+void HttpServer::setTrustedProxies(const QList<QPair<QHostAddress, int>> &proxies)
+{
+    m_trustedProxies = proxies;
+}
+
+bool HttpServer::isTrustedProxy(const QHostAddress &address) const
+{
+    return std::any_of(m_trustedProxies.cbegin(), m_trustedProxies.cend(),
+                       [&](const QPair<QHostAddress, int> &subnet) {
+                           return address.isInSubnet(subnet.first, subnet.second);
+                       });
+}
+
+QHostAddress HttpServer::clientOf(const HttpRequest &request) const
+{
+    // From the right: each entry was added by the hop after it, and is worth
+    // what that hop is - a client can write anything at the left end.
+    QHostAddress client = request.peer;
+    if (m_trustedProxies.isEmpty() || !isTrustedProxy(client))
+        return client;
+    const QList<QByteArray> hops = request.header("x-forwarded-for").split(',');
+    for (auto hop = hops.crbegin(); hop != hops.crend() && isTrustedProxy(client); ++hop) {
+        const QHostAddress address = forwardedAddress(*hop);
+        if (address.isNull())
+            break;
+        client = address;
+    }
+    return client;
 }
 
 bool HttpServer::listen(const QHostAddress &address, quint16 port)
@@ -518,12 +577,8 @@ int HttpServer::parseRequest(Connection &connection, HttpRequest &request)
 
 bool HttpServer::dispatch(Connection &connection, HttpRequest request)
 {
-    // A dual stack socket reports IPv4 peers as "::ffff:a.b.c.d".
-    request.peer = connection.socket->peerAddress();
-    bool mapped = false;
-    const quint32 ipv4 = request.peer.toIPv4Address(&mapped);
-    if (mapped)
-        request.peer = QHostAddress(ipv4);
+    request.peer = plainAddress(connection.socket->peerAddress());
+    request.client = clientOf(request);
     // HTTP/1.1 keeps the connection unless told otherwise, HTTP/1.0 closes
     // it unless asked to keep it.
     const QByteArray connectionHeader = request.header("connection").toLower();

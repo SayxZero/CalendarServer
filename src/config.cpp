@@ -5,6 +5,7 @@
 #include <QFile>
 #include <QFileInfo>
 #include <QNetworkInterface>
+#include <QRegularExpression>
 #include <QSettings>
 #include <QStandardPaths>
 #include <QThread>
@@ -31,6 +32,12 @@ ServerOptions::ServerOptions()
               QStringLiteral("file"))
     , noRegistration(QStringLiteral("no-registration"),
                      QStringLiteral("Запретить создание новых аккаунтов."))
+    , trustedProxies(QStringLiteral("trusted-proxies"),
+                     QStringLiteral("Обратные прокси перед сервером, адреса или подсети через "
+                                    "запятую (127.0.0.1,10.0.0.0/8). Запрос от них считается "
+                                    "запросом клиента, которого назвал X-Forwarded-For: за ним - "
+                                    "неверные пароли и строка журнала."),
+                     QStringLiteral("list"))
     , service(QStringLiteral("service"),
               QStringLiteral("Работать службой: журнал пишется и в server.log папки данных. На "
                              "Windows - службой без консоли, так сервер запускает диспетчер "
@@ -50,8 +57,48 @@ ServerOptions::ServerOptions()
 
 QList<QCommandLineOption> ServerOptions::all() const
 {
-    return { config, host, port, dataDir, logFile, noRegistration, service,
+    return { config, host, port, dataDir, logFile, noRegistration, trustedProxies, service,
              listUsers, deleteUser, setPassword, importDb };
+}
+
+bool ServerConfig::parseTrustedProxies(const QString &text, QList<Subnet> *proxies,
+                                       QString *error)
+{
+    static const QRegularExpression separators(QStringLiteral("[,;\\s]+"));
+    QList<Subnet> parsed;
+    for (const QString &entry : text.split(separators, Qt::SkipEmptyParts)) {
+        Subnet subnet;
+        if (entry.contains(QLatin1Char('/'))) {
+            subnet = QHostAddress::parseSubnet(entry);
+        } else if (subnet.first.setAddress(entry)) {
+            // The way HttpServer sees an IPv4 peer of a dual stack socket.
+            bool mapped = false;
+            const quint32 ipv4 = subnet.first.toIPv4Address(&mapped);
+            if (mapped)
+                subnet.first = QHostAddress(ipv4);
+            subnet.second = subnet.first.protocol() == QAbstractSocket::IPv4Protocol ? 32 : 128;
+        }
+        if (subnet.first.isNull() || subnet.second < 0) {
+            if (error)
+                *error = QStringLiteral("Неверный адрес прокси: %1").arg(entry);
+            return false;
+        }
+        parsed.append(subnet);
+    }
+    *proxies = parsed;
+    return true;
+}
+
+QString ServerConfig::trustedProxiesText() const
+{
+    QStringList entries;
+    for (const Subnet &subnet : trustedProxies) {
+        const bool whole = subnet.second
+                           == (subnet.first.protocol() == QAbstractSocket::IPv4Protocol ? 32 : 128);
+        entries << (whole ? subnet.first.toString()
+                          : QStringLiteral("%1/%2").arg(subnet.first.toString()).arg(subnet.second));
+    }
+    return entries.join(QStringLiteral(", "));
 }
 
 bool ServerConfig::loadIni(const QString &path, QString *error)
@@ -93,6 +140,17 @@ bool ServerConfig::loadIni(const QString &path, QString *error)
         logFile = log;
 
     allowRegistration = ini.value(QStringLiteral("allow_registration"), allowRegistration).toBool();
+    // QSettings turns an unquoted list with commas into a QStringList.
+    if (ini.contains(QStringLiteral("trusted_proxies"))) {
+        const QString list = ini.value(QStringLiteral("trusted_proxies")).toStringList()
+                                 .join(QLatin1Char(','));
+        QString problem;
+        if (!parseTrustedProxies(list, &trustedProxies, &problem)) {
+            if (error)
+                *error = QStringLiteral("trusted_proxies: %1").arg(problem);
+            return false;
+        }
+    }
     maxBodyMb = qBound(1, ini.value(QStringLiteral("max_body_mb"), maxBodyMb).toInt(), 1024);
     tokenLifetimeDays = qMax(1, ini.value(QStringLiteral("token_lifetime_days"),
                                           tokenLifetimeDays).toInt());
@@ -238,6 +296,11 @@ bool ServerConfig::apply(const QCommandLineParser &parser, const ServerOptions &
         logFile = parser.value(options.logFile);
     if (parser.isSet(options.noRegistration))
         allowRegistration = false;
+    if (parser.isSet(options.trustedProxies)
+        && !parseTrustedProxies(parser.values(options.trustedProxies).join(QLatin1Char(',')),
+                                &trustedProxies, error)) {
+        return false;
+    }
     return true;
 }
 

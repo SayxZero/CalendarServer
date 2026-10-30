@@ -3,7 +3,9 @@
 #include <QByteArray>
 #include <QHash>
 #include <QHostAddress>
+#include <QList>
 #include <QObject>
+#include <QPair>
 #include <QString>
 #include <QUrlQuery>
 
@@ -26,7 +28,12 @@ struct HttpRequest
     QUrlQuery query;
     QHash<QByteArray, QByteArray> headers;
     QByteArray body;
-    QHostAddress peer;
+    QHostAddress peer;     //!< the other end of the connection
+    /*!
+     * Who the request is from: the peer, or behind a trusted proxy the
+     * address its X-Forwarded-For names (HttpServer::setTrustedProxies()).
+     */
+    QHostAddress client;
 
     QByteArray header(const QByteArray &name) const { return headers.value(name.toLower()); }
 };
@@ -128,6 +135,15 @@ public:
     /*! Largest request body accepted; a bigger one gets 413. */
     void setMaxBodySize(qint64 bytes);
 
+    /*!
+     * Proxies whose X-Forwarded-For is believed; before listen(). The client
+     * of a request from one of them is the last address of the header, and
+     * while that is a trusted proxy too, the one before it: what the last
+     * trusted hop saw. A request from anywhere else, or one whose header
+     * cannot be read, is its peer's.
+     */
+    void setTrustedProxies(const QList<QPair<QHostAddress, int>> &proxies);
+
     bool listen(const QHostAddress &address, quint16 port);
     void close();
     quint16 serverPort() const;
@@ -202,6 +218,9 @@ private:
     void release(qint64 bytes);
     void admitWaiting();
 
+    bool isTrustedProxy(const QHostAddress &address) const;
+    QHostAddress clientOf(const HttpRequest &request) const;
+
     QTcpServer *m_server = nullptr;
     QHash<quint64, Connection> m_connections;
     quint64 m_nextId = 0;
@@ -210,6 +229,7 @@ private:
     WorkerHandler m_workerHandler;
     WorkerPool *m_pool = nullptr;
     Limits m_limits;
+    QList<QPair<QHostAddress, int>> m_trustedProxies;
     qint64 m_reserved = 0;
     bool m_paused = false;
     QTimer *m_evictTimer = nullptr;

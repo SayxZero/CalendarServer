@@ -159,8 +159,13 @@ HttpResponse Api::handle(const HttpRequest &request)
     if (method == "HEAD")
         response.headOnly = true;
 
+    // Behind a trusted proxy the client, and the proxy it came through.
+    const QString from = request.client.isNull() || request.client == request.peer
+                             ? request.peer.toString()
+                             : QStringLiteral("%1 через %2").arg(request.client.toString(),
+                                                               request.peer.toString());
     qInfo().noquote() << QStringLiteral("%1 %2 %3 -> %4 (%5 мс)")
-                             .arg(request.peer.toString(), QString::fromLatin1(method), path)
+                             .arg(from, QString::fromLatin1(method), path)
                              .arg(response.status)
                              .arg(timer.elapsed());
     return response;
@@ -275,14 +280,14 @@ QJsonObject Api::userJson(qint64 userId)
     return object;
 }
 
-QString Api::loginKey(const QHostAddress &peer, const QString &login)
+QString Api::loginKey(const QHostAddress &client, const QString &login)
 {
-    return QStringLiteral("login %1 %2").arg(peer.toString(), login.toLower());
+    return QStringLiteral("login %1 %2").arg(client.toString(), login.toLower());
 }
 
-QString Api::peerKey(const QHostAddress &peer)
+QString Api::peerKey(const QHostAddress &client)
 {
-    return QStringLiteral("peer %1").arg(peer.toString());
+    return QStringLiteral("peer %1").arg(client.toString());
 }
 
 bool Api::isThrottled(const QString &key, int limit)
@@ -411,8 +416,8 @@ HttpResponse Api::login(const HttpRequest &request)
 
     const QString login = body.value(QStringLiteral("login")).toString().trimmed();
     const QString password = body.value(QStringLiteral("password")).toString();
-    if (isThrottled(loginKey(request.peer, login), kMaxFailures)
-        || isThrottled(peerKey(request.peer), kMaxAddressFailures)) {
+    if (isThrottled(loginKey(request.client, login), kMaxFailures)
+        || isThrottled(peerKey(request.client), kMaxAddressFailures)) {
         return error(429, QStringLiteral("throttled"),
                      QStringLiteral("Слишком много неудачных попыток. Попробуйте через "
                                     "несколько минут"));
@@ -420,8 +425,8 @@ HttpResponse Api::login(const HttpRequest &request)
 
     const UserInfo user = m_storage->userByLogin(login);
     if (!user.isValid() || !verifyPassword(password, m_storage->passwordHash(user.id))) {
-        noteFailure(loginKey(request.peer, login));
-        noteFailure(peerKey(request.peer));
+        noteFailure(loginKey(request.client, login));
+        noteFailure(peerKey(request.client));
         return error(401, QStringLiteral("wrong_credentials"),
                      QStringLiteral("Неверный логин или пароль"));
     }
@@ -556,7 +561,7 @@ HttpResponse Api::sync(const HttpRequest &request, qint64 userId)
     if (clamped > 0) {
         qWarning().noquote() << QStringLiteral("%1: часы устройства %2 спешат, время правки "
                                                "записей (%3) взято по серверу")
-                                    .arg(request.peer.toString(),
+                                    .arg(request.client.toString(),
                                          device.isEmpty() ? QStringLiteral("без имени")
                                                           : QStringLiteral("«%1»").arg(device))
                                     .arg(clamped);

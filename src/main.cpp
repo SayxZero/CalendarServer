@@ -297,6 +297,8 @@ int runServer(int argc, char *argv[])
                              .arg(asService ? QStringLiteral(" (служба)") : QString());
     qInfo().noquote() << "База данных:" << native(config.databasePath());
     qInfo().noquote() << "Регистрация:" << (config.allowRegistration ? "открыта" : "закрыта");
+    if (!config.trustedProxies.isEmpty())
+        qInfo().noquote() << "Доверенные прокси:" << config.trustedProxiesText();
     const QStringList addresses = config.clientAddresses(server.port());
     if (!addresses.isEmpty()) {
         qInfo().noquote() << "Адрес для клиентов:";
