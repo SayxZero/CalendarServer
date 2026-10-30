@@ -34,6 +34,8 @@ struct LoginThrottle
  *   GET  /api/me        the account and what is stored for it
  *   POST /api/profile   {displayName}
  *   POST /api/password  {oldPassword, newPassword}, logs out the other devices
+ *   GET  /api/sessions         the sessions of the account, no key or hash among them
+ *   POST /api/sessions/revoke  {id} ends one of them
  *   POST /api/sync      {since, device?, changes: [...]} -> {revision, changes: [...]}
  *
  * Shared calendars (see shares.h). Everything here is the owner's, except the
@@ -80,6 +82,8 @@ private:
     HttpResponse me(qint64 userId);
     HttpResponse profile(const HttpRequest &request, qint64 userId);
     HttpResponse changePassword(const HttpRequest &request, qint64 userId);
+    HttpResponse sessions(const HttpRequest &request, qint64 userId);
+    HttpResponse revokeSession(const HttpRequest &request, qint64 userId);
     HttpResponse sync(const HttpRequest &request, qint64 userId);
 
     /*!

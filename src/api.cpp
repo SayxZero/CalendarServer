@@ -41,6 +41,8 @@ const QHash<QString, QList<QByteArray>> &routes()
         { QStringLiteral("/api/me"), { "GET" } },
         { QStringLiteral("/api/profile"), { "POST" } },
         { QStringLiteral("/api/password"), { "POST" } },
+        { QStringLiteral("/api/sessions"), { "GET" } },
+        { QStringLiteral("/api/sessions/revoke"), { "POST" } },
         { QStringLiteral("/api/sync"), { "POST" } },
         { QStringLiteral("/api/record"), { "GET" } },
         { QStringLiteral("/api/share"), { "GET", "POST" } },
@@ -65,6 +67,16 @@ QByteArray randomBytes(int count)
 QByteArray tokenHash(const QString &token)
 {
     return QCryptographicHash::hash(token.toUtf8(), QCryptographicHash::Sha256);
+}
+
+/*!
+ * What a session is called outside the server. The stored hash itself must not
+ * leave: this one is a hash of it and answers no question about the key.
+ */
+QString sessionId(const QByteArray &hash)
+{
+    return QString::fromLatin1(
+        QCryptographicHash::hash("session:" + hash, QCryptographicHash::Sha256).left(16).toHex());
 }
 
 /*! Compares without leaking through timing how many leading bytes match. */
@@ -134,6 +146,10 @@ HttpResponse Api::handle(const HttpRequest &request)
             response = profile(request, userId);
         } else if (path == QLatin1String("/api/password") && needs("POST")) {
             response = changePassword(request, userId);
+        } else if (path == QLatin1String("/api/sessions") && needs("GET")) {
+            response = sessions(request, userId);
+        } else if (path == QLatin1String("/api/sessions/revoke") && needs("POST")) {
+            response = revokeSession(request, userId);
         } else if (path == QLatin1String("/api/sync") && needs("POST")) {
             response = sync(request, userId);
         } else if (path == QLatin1String("/api/record") && needs("GET")) {
@@ -512,6 +528,49 @@ HttpResponse Api::changePassword(const HttpRequest &request, qint64 userId)
     if (!changed)
         return error(500, QStringLiteral("storage"), QStringLiteral("Не удалось сменить пароль"));
     return ok(QJsonObject());
+}
+
+HttpResponse Api::sessions(const HttpRequest &request, qint64 userId)
+{
+    QByteArray own;
+    authenticate(request, &own);
+    QJsonArray list;
+    for (const SessionInfo &session : m_storage->sessions(userId, m_config.tokenLifetimeDays)) {
+        QJsonObject entry;
+        entry.insert(QStringLiteral("id"), sessionId(session.tokenHash));
+        entry.insert(QStringLiteral("device"), session.device);
+        entry.insert(QStringLiteral("createdAt"), session.createdAt.toString(Qt::ISODate));
+        entry.insert(QStringLiteral("lastUsedAt"), session.lastUsedAt.toString(Qt::ISODate));
+        entry.insert(QStringLiteral("current"), session.tokenHash == own);
+        list.append(entry);
+    }
+    QJsonObject object;
+    object.insert(QStringLiteral("sessions"), list);
+    return ok(object);
+}
+
+HttpResponse Api::revokeSession(const HttpRequest &request, qint64 userId)
+{
+    QJsonObject body;
+    HttpResponse failure;
+    if (!parseBody(request, &body, &failure))
+        return failure;
+    const QString id = body.value(QStringLiteral("id")).toString();
+    if (id.isEmpty())
+        return error(400, QStringLiteral("invalid"), QStringLiteral("Не указан сеанс"));
+
+    // Looked for among the sessions of this account only: the id of somebody
+    // else's session finds nothing, and looks exactly like one that has ended.
+    for (const SessionInfo &session : m_storage->sessions(userId, m_config.tokenLifetimeDays)) {
+        if (sessionId(session.tokenHash) != id)
+            continue;
+        if (!m_storage->removeToken(session.tokenHash)) {
+            return error(500, QStringLiteral("storage"),
+                         QStringLiteral("Не удалось завершить сеанс"));
+        }
+        return ok(QJsonObject());
+    }
+    return error(404, QStringLiteral("not_found"), QStringLiteral("Такого сеанса уже нет"));
 }
 
 HttpResponse Api::sync(const HttpRequest &request, qint64 userId)

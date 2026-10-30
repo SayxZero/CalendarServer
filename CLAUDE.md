@@ -28,7 +28,7 @@ SQLite, раздаёт изменения устройствам и ведёт �
 приставкой `SERVER_`:
 
 ```bash
-cmd //c "D:\\Prog\\Calendar\\CalendarServer\\build-server.bat" -noui   # сервер, панель, бенчмарк, 49 + 18 + 9 тестов
+cmd //c "D:\\Prog\\Calendar\\CalendarServer\\build-server.bat" -noui   # сервер, панель, бенчмарк, 55 + 18 + 9 тестов
 cmd //c "D:\\Prog\\Calendar\\CalendarServer\\run-server.bat" -noui --list-users
 ```
 

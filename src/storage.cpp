@@ -1007,6 +1007,31 @@ int Storage::tokenCount(qint64 userId)
     return 0;
 }
 
+QList<SessionInfo> Storage::sessions(qint64 userId, int lifetimeDays)
+{
+    QList<SessionInfo> found;
+    QSqlQuery query(m_db);
+    query.prepare(QStringLiteral("SELECT token_hash, device, created_at, last_used_at FROM tokens"
+                                 " WHERE user_id = :user ORDER BY last_used_at DESC"));
+    query.bindValue(QStringLiteral(":user"), userId);
+    if (!query.exec())
+        return found;
+
+    const QDateTime now = QDateTime::currentDateTimeUtc();
+    while (query.next()) {
+        SessionInfo session;
+        session.tokenHash = query.value(0).toByteArray();
+        session.device = query.value(1).toString();
+        session.createdAt = QDateTime::fromString(query.value(2).toString(), Qt::ISODate);
+        session.lastUsedAt = QDateTime::fromString(query.value(3).toString(), Qt::ISODate);
+        // Gone in all but the row: the next use would drop it (userForToken()).
+        if (session.lastUsedAt.isValid() && session.lastUsedAt.addDays(lifetimeDays) < now)
+            continue;
+        found.append(session);
+    }
+    return found;
+}
+
 // ------------------------------------------------------------------- records
 
 SyncRecord Storage::recordAt(qint64 userId, const QString &kind, const QString &id, bool *found)

@@ -68,6 +68,15 @@ struct DatabaseInfo
     QDateTime lastActivity; //!< the newest sync or use of a session it remembers
 };
 
+/*! One session of an account (a row of tokens). */
+struct SessionInfo
+{
+    QByteArray tokenHash;   //!< stays in the server: Api shows an id made from it
+    QString device;
+    QDateTime createdAt;
+    QDateTime lastUsedAt;
+};
+
 struct SyncOutcome
 {
     qint64 revision = 0;       //!< the cursor the device keeps for its next sync
@@ -270,6 +279,9 @@ public:
     /*! Logs out every other device of the user, used after a password change. */
     bool removeOtherTokens(qint64 userId, const QByteArray &keepHash);
     int tokenCount(qint64 userId);
+
+    /*! The sessions of the user still alive, the most recently used first. */
+    QList<SessionInfo> sessions(qint64 userId, int lifetimeDays);
 
     // ---- records -----------------------------------------------------------
     /*!

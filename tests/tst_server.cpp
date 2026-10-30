@@ -55,6 +55,9 @@ private slots:
     void deletionsTravel();
     void logoutEndsSession();
     void passwordChangeLogsOutOthers();
+    void sessionsAreListedWithoutSecrets();
+    void revokedSessionGets401();
+    void foreignSessionCannotBeRevoked();
     void throttlesGuessing();
     void forwardedForIsIgnoredFromUntrustedPeers();
     void trustedProxyCountsVisitorsApart();
@@ -535,6 +538,104 @@ void ServerTest::passwordChangeLogsOutOthers()
 
     credentials.insert(QStringLiteral("password"), QStringLiteral("better22"));
     QCOMPARE(call("POST", QStringLiteral("/api/login"), credentials).status, 200);
+}
+
+void ServerTest::sessionsAreListedWithoutSecrets()
+{
+    const QString first = registerUser(QStringLiteral("harry"), QStringLiteral("secret1"));
+    QJsonObject credentials;
+    credentials.insert(QStringLiteral("login"), QStringLiteral("harry"));
+    credentials.insert(QStringLiteral("password"), QStringLiteral("secret1"));
+    credentials.insert(QStringLiteral("device"), QStringLiteral("ИИ-агент · Клиент"));
+    const QString second = call("POST", QStringLiteral("/api/login"), credentials)
+                               .body.value(QStringLiteral("token")).toString();
+
+    QCOMPARE(call("GET", QStringLiteral("/api/sessions")).status, 401);
+    QCOMPARE(call("POST", QStringLiteral("/api/sessions"), QJsonObject(), first).status, 405);
+
+    const Reply reply = call("GET", QStringLiteral("/api/sessions"), {}, first);
+    QCOMPARE(reply.status, 200);
+    const QJsonArray list = reply.body.value(QStringLiteral("sessions")).toArray();
+    QCOMPARE(list.size(), 2);
+
+    QSet<QString> devices;
+    int current = 0;
+    for (const QJsonValue &value : list) {
+        const QJsonObject session = value.toObject();
+        devices.insert(session.value(QStringLiteral("device")).toString());
+        current += session.value(QStringLiteral("current")).toBool() ? 1 : 0;
+        QVERIFY(QDateTime::fromString(session.value(QStringLiteral("createdAt")).toString(),
+                                      Qt::ISODate).isValid());
+        QVERIFY(QDateTime::fromString(session.value(QStringLiteral("lastUsedAt")).toString(),
+                                      Qt::ISODate).isValid());
+        // Exactly these fields: anything added here would leave the server.
+        QCOMPARE(session.keys().size(), 5);
+    }
+    QCOMPARE(current, 1);
+    QVERIFY(devices.contains(QStringLiteral("ИИ-агент · Клиент")));
+
+    // The id is neither the key nor the hash the base keeps of it.
+    const QByteArray answer = QJsonDocument(reply.body).toJson();
+    for (const QString &token : { first, second }) {
+        const QByteArray hash = QCryptographicHash::hash(token.toUtf8(), QCryptographicHash::Sha256);
+        QVERIFY(!answer.contains(token.toUtf8()));
+        QVERIFY(!answer.contains(hash.toHex()));
+        QVERIFY(!answer.contains(hash.toBase64()));
+    }
+}
+
+void ServerTest::revokedSessionGets401()
+{
+    const QString owner = registerUser(QStringLiteral("irina"), QStringLiteral("secret1"));
+    QJsonObject credentials;
+    credentials.insert(QStringLiteral("login"), QStringLiteral("irina"));
+    credentials.insert(QStringLiteral("password"), QStringLiteral("secret1"));
+    credentials.insert(QStringLiteral("device"), QStringLiteral("ИИ-агент · Клиент"));
+    const QString agent = call("POST", QStringLiteral("/api/login"), credentials)
+                              .body.value(QStringLiteral("token")).toString();
+    QCOMPARE(call("GET", QStringLiteral("/api/me"), {}, agent).status, 200);
+
+    QString id;
+    const QJsonArray list =
+        call("GET", QStringLiteral("/api/sessions"), {}, owner).body.value(QStringLiteral("sessions")).toArray();
+    for (const QJsonValue &value : list) {
+        if (!value.toObject().value(QStringLiteral("current")).toBool())
+            id = value.toObject().value(QStringLiteral("id")).toString();
+    }
+    QVERIFY(!id.isEmpty());
+
+    QJsonObject revoke;
+    QCOMPARE(call("POST", QStringLiteral("/api/sessions/revoke"), revoke, owner).status, 400);
+    revoke.insert(QStringLiteral("id"), id);
+    QCOMPARE(call("POST", QStringLiteral("/api/sessions/revoke"), revoke).status, 401);
+    QCOMPARE(call("POST", QStringLiteral("/api/sessions/revoke"), revoke, owner).status, 200);
+
+    // Every request of that session from now on, and only of that session.
+    QCOMPARE(call("GET", QStringLiteral("/api/me"), {}, agent).status, 401);
+    QJsonObject exchange;
+    exchange.insert(QStringLiteral("since"), 0);
+    QCOMPARE(call("POST", QStringLiteral("/api/sync"), exchange, agent).status, 401);
+    QCOMPARE(call("GET", QStringLiteral("/api/me"), {}, owner).status, 200);
+
+    // A second press finds nothing, and the list has moved on.
+    QCOMPARE(call("POST", QStringLiteral("/api/sessions/revoke"), revoke, owner).status, 404);
+    QCOMPARE(call("GET", QStringLiteral("/api/sessions"), {}, owner)
+                 .body.value(QStringLiteral("sessions")).toArray().size(), 1);
+}
+
+void ServerTest::foreignSessionCannotBeRevoked()
+{
+    const QString mine = registerUser(QStringLiteral("jakob"));
+    const QString theirs = registerUser(QStringLiteral("klara"));
+    const QString id = call("GET", QStringLiteral("/api/sessions"), {}, theirs)
+                           .body.value(QStringLiteral("sessions")).toArray().at(0).toObject()
+                           .value(QStringLiteral("id")).toString();
+    QVERIFY(!id.isEmpty());
+
+    QJsonObject revoke;
+    revoke.insert(QStringLiteral("id"), id);
+    QCOMPARE(call("POST", QStringLiteral("/api/sessions/revoke"), revoke, mine).status, 404);
+    QCOMPARE(call("GET", QStringLiteral("/api/me"), {}, theirs).status, 200);
 }
 
 void ServerTest::throttlesGuessing()

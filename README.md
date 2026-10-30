@@ -477,6 +477,8 @@ Start-Service CosmosCalendarServer
 | `GET /api/me` | — | `{user, revision, records, sessions}` |
 | `POST /api/profile` | `{displayName}` | `{user}` |
 | `POST /api/password` | `{oldPassword, newPassword}` | `{}`; другие устройства выходят |
+| `GET /api/sessions` | — | `{sessions: [{id, device, createdAt, lastUsedAt, current}]}` — сеансы этого аккаунта; `id` — не ключ и не его хеш |
+| `POST /api/sessions/revoke` | `{id}` | `{}`; `404`, если у аккаунта такого сеанса нет. Следующий запрос этого сеанса получит `401` |
 | `POST /api/sync` | `{since, device?, changes: [...]}` | `{revision, accepted, rejected, conflicts: [...], changes: [...]}` |
 | `GET /api/record?kind=…&id=…` | — | `{found, change?: {kind, id, deleted, modified, revision, data?}}` — одна запись, как её держит этот аккаунт |
 | `GET /api/share?calendar=<id>` | — | `{share}` — что владелец открыл и кому |
